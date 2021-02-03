@@ -7,11 +7,13 @@ SQRT_TWO = tf.sqrt(tf.constant(2., FLOAT_DTYPE))
 
 # ==============================================================================
 # ===
+@tf.function
 def norm_pdf(x):
     return ONE_OVER_SQRT_TWO_PI * tf.exp(-0.5 * tf.square(x))
 
+@tf.custom_gradient
 def norm_cdf(x):
-    return 0.5 * (1. + tf.math.erf(x / SQRT_TWO))
+    return 0.5 * (1. + tf.math.erf(x / SQRT_TWO)), norm_pdf
 
 # ==============================================================================
 # === Black Scholes model
