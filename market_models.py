@@ -2,7 +2,7 @@
 import tensorflow as tf
 import numpy as np
 
-from constants import FLOAT_PI, FLOAT_DTYPE
+from constants import FLOAT_PI, FLOAT_DTYPE, NP_FLOAT_DTYPE
 
 ONE_OVER_SQRT_TWO_PI = 1. / tf.sqrt(2. * FLOAT_PI)
 SQRT_TWO = tf.sqrt(tf.constant(2., FLOAT_DTYPE))
@@ -99,7 +99,7 @@ class BlackScholes(object):
         # sobol = tf.math.sobol_sample(num_timesteps, num_paths, dtype=FLOAT_DTYPE)
         # rvs = norm_qdf(sobol)
 
-        rvs = tf.random.normal((num_paths, num_timesteps), dtype=FLOAT_DTYPE)
+        rvs = np.random.normal(size=(num_paths, num_timesteps))
 
         # use numpy as it needs to be modified
         paths = np.zeros((num_paths, num_timesteps + 1))
@@ -112,4 +112,4 @@ class BlackScholes(object):
                 * np.exp((mu - self.vol**2 / 2) * dt \
                          + self.vol * np.sqrt(dt) * rvs[:, idx])
 
-        return tf.convert_to_tensor(paths, FLOAT_DTYPE)
+        return np.array(paths, NP_FLOAT_DTYPE)
