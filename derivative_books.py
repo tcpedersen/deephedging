@@ -8,24 +8,27 @@ from constants import NP_FLOAT_DTYPE, NP_INT_DTYPE
 # ==============================================================================
 # === Base
 class DerivativeBook(abc.ABC):
+    def get_state_dimension(self) -> int:
+        """Returns the dimensionalility of the state."""
+        return self.get_market_size() + 1 + self.get_non_market_size()
+
     @abc.abstractmethod
     def get_book_size(self) -> int:
         """Returns the number of derivatives in the book."""
 
     @abc.abstractmethod
     def get_market_size(self) -> int:
-        """Returns the number of underlying risky assets in the book."""
+        """Returns the number of underlying risky tradabke processes."""
 
     @abc.abstractmethod
-    def get_state_dimension(self) -> int:
-        """Returns the dimension of the underlying risky assets. If they have
-        different dimensions, return the largest."""
+    def get_non_market_size(self) -> int:
+        """Returns the number of underlying non-tradable processes."""
 
     @abc.abstractmethod
     def payoff(self, terminal_state: np.ndarray) -> np.ndarray:
         """Compute payoff from terminal state.
         Args:
-            terminal_state: (num_paths, market_size, state_dimension)
+            terminal_state: (num_paths, market_size + 1 + non_market_size)
         Returns:
             payoff: (num_paths, )
         """
@@ -34,41 +37,27 @@ class DerivativeBook(abc.ABC):
     def book_value(self, state: np.ndarray, time: float) -> np.ndarray:
         """Compute value of book for m different states.
         Args:
-            state: (num_paths, market_size, state_dimension)
+            state: (num_paths, market_size + 1 + non_market_size)
             time: float
         Returns:
             value: (num_paths, )
         """
 
     @abc.abstractmethod
-    def sample_risky_assets(self,
-                            init_state: np.ndarray,
-                            num_paths: int,
-                            num_steps: int,
-                            risk_neutral: bool) -> np.ndarray:
+    def sample_paths(self,
+                     init_state: np.ndarray,
+                     num_paths: int,
+                     num_steps: int,
+                     risk_neutral: bool) -> np.ndarray:
         """Simulate sample paths of risky assets.
         Args:
-            init_state: (market_size, state_dimension)
+            init_state: (market_size + 1 + non_market_size, )
             num_paths: int
             num_steps: int
             risk_neutral: bool
         Returns:
-            sample paths: (num_paths, market_size, state_dimension,
+            sample paths: (num_paths, market_size + 1 + non_market_size,
                            num_steps + 1)
-        """
-
-    @abc.abstractmethod
-    def sample_riskfree_asset(self,
-                              init_state: np.array,
-                              num_paths: int,
-                              num_steps: int) -> np.ndarray:
-        """Simulate sample paths of riskless asset.
-        Args:
-            init_state: (1, )
-            num_paths: int
-            num_steps: int
-        Returns:
-            sample paths: (num_paths, num_steps + 1)
         """
 
 # ==============================================================================
@@ -85,14 +74,18 @@ def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
     Returns:
         price: (num_paths, book_size)
     """
-    forward = spot * np.exp(rate * time_to_maturity)
-    m = np.log(forward / strike)
-    v = (volatility * np.sqrt(time_to_maturity))
-    delta = np.exp(-rate * time_to_maturity)
+    if time_to_maturity > 0:
+        forward = spot * np.exp(rate * time_to_maturity)
+        m = np.log(forward / strike)
+        v = (volatility * np.sqrt(time_to_maturity))
+        delta = np.exp(-rate * time_to_maturity)
 
-    return delta * theta \
-        * (forward * norm_cdf(theta * (m / v + v / 2.)) \
-           - strike * norm_cdf(theta * (m / v - v / 2.)))
+        return delta * theta \
+            * (forward * norm_cdf(theta * (m / v + v / 2.)) \
+               - strike * norm_cdf(theta * (m / v - v / 2.)))
+    else:
+        diff = theta * (spot - strike)
+        return diff * (diff > 0)
 
 
 def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
@@ -107,11 +100,14 @@ def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
     Returns:
         delta: (num_paths, book_size)
     """
-    forward = spot * np.exp(rate * time_to_maturity)
-    m = np.log(forward / strike)
-    v = (volatility * np.sqrt(time_to_maturity))
+    if time_to_maturity:
+        forward = spot * np.exp(rate * time_to_maturity)
+        m = np.log(forward / strike)
+        v = (volatility * np.sqrt(time_to_maturity))
 
-    return theta * norm_cdf(theta * (m / v + v / 2.))
+        return theta * norm_cdf(theta * (m / v + v / 2.))
+    else:
+        return theta * (spot - strike) > 0
 
 
 def simulate_geometric_brownian_motion(maturity: float,
@@ -158,6 +154,7 @@ class BlackScholesPutCallBook(DerivativeBook):
                  rate: float,
                  diffusion: np.ndarray,
                  put_call: np.ndarray,
+                 exposure: np.ndarray,
                  linker: np.ndarray) -> None:
         """ Initialisation of BlackScholesPutCallBook
         Args:
@@ -167,6 +164,7 @@ class BlackScholesPutCallBook(DerivativeBook):
             rate: float
             diffusion: (market_size, num_brownian_motions)
             put_call: 1 or -1 for call / put (book_size, )
+            exposure: n or -n for long / short (book_size, )
             linker: {0, ..., market_size-1} indicates what asset the
                 strike is associated with (book_size, )
         """
@@ -176,6 +174,7 @@ class BlackScholesPutCallBook(DerivativeBook):
         self.rate = float(rate)
         self.diffusion = np.array(diffusion, NP_FLOAT_DTYPE, ndmin=2)
         self.put_call = np.array(put_call, NP_INT_DTYPE, ndmin=1)
+        self.exposure = np.array(exposure, NP_INT_DTYPE, ndmin=1)
         self.linker = np.array(linker, NP_INT_DTYPE, ndmin=1)
 
         self.volatility = np.linalg.norm(self.diffusion, axis=1)
@@ -188,13 +187,14 @@ class BlackScholesPutCallBook(DerivativeBook):
     def get_market_size(self):
         return len(self.drift)
 
-    def get_state_dimension(self):
-        return 1
+    def get_non_market_size(self):
+        return 0
 
     def payoff(self, terminal_state: np.ndarray) -> np.ndarray:
         """Implementation of payoff from DerivativeBook"""
-        diff = self.put_call * (terminal_state[:, self.linker, 0] - self.strike)
-        return (diff * (diff > 0)).sum(axis=1)
+        tradable = terminal_state[:, :self.get_market_size()]
+        diff = self.put_call * (tradable[:, self.linker] - self.strike)
+        return (diff * (diff > 0)) @ self.exposure
 
     def marginal_book_value(self, state: np.ndarray, time:float) -> np.ndarray:
         """Computes value of each individual option.
@@ -204,16 +204,17 @@ class BlackScholesPutCallBook(DerivativeBook):
                 prices: (num_paths, book_size)
 
         """
+        tradable = state[:, :self.get_market_size()]
         value = black_price(
             self.maturity - time,
-            state[:, self.linker, 0],
+            tradable[:, self.linker],
             self.strike,
             self.rate,
             self.volatility[self.linker],
             self.put_call
             )
 
-        return value
+        return self.exposure * value
 
 
     def book_value(self, state: np.ndarray, time: float) -> np.ndarray:
@@ -228,43 +229,43 @@ class BlackScholesPutCallBook(DerivativeBook):
             Returns:
                 gradient: (num_paths, book_size)
         """
+        tradable = state[:, :self.get_market_size()]
         gradient = black_delta(
             self.maturity - time,
-            state[:, self.linker, 0],
+            tradable[:, self.linker],
             self.strike,
             self.rate,
             self.volatility[self.linker],
             self.put_call
             )
 
-        return gradient
+        return self.exposure * gradient
 
 
-    def sample_risky_assets(self,
-                            init_state: np.ndarray,
-                            num_paths: int,
-                            num_steps: int,
-                            risk_neutral: bool) -> np.ndarray:
+    def sample_paths(self,
+                     init_state: np.ndarray,
+                     num_paths: int,
+                     num_steps: int,
+                     risk_neutral: bool) -> np.ndarray:
         """Implementation of sample_risky_assets from DerivativeBook"""
         measure_drift = np.full_like(self.drift, self.rate) if risk_neutral \
             else self.drift
-        paths = simulate_geometric_brownian_motion(
+
+        # simulate risky paths
+        tradable = init_state[:self.get_market_size()]
+        risk = simulate_geometric_brownian_motion(
             self.maturity,
-            init_state[:, 0],
+            tradable,
             measure_drift,
             self.volatility,
             self.correlation,
             num_paths,
             num_steps)
 
-        return paths[:, :, np.newaxis, :]
-
-    def sample_riskfree_asset(self,
-                              init_state: np.array,
-                              num_paths: int,
-                              num_steps: int) -> np.ndarray:
-        """Implementation of sample_riskfree_asset from DerivativesBook"""
+        # simulate riskless path
         time_grid = np.linspace(0., self.maturity, num_steps + 1)
-        single_path = init_state * np.exp(self.rate * time_grid)
+        single_path = init_state[self.get_market_size()] \
+            * np.exp(self.rate * time_grid)
+        riskless = np.tile(single_path, (num_paths, 1))
 
-        return np.tile(single_path, (num_paths, 1))
+        return np.concatenate((risk, riskless[:, np.newaxis, :]), axis=1)

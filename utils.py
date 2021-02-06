@@ -8,7 +8,7 @@ SQRT_TWO = np.sqrt(2.)
 # ==============================================================================
 # === Gaussian
 def norm_pdf(x):
-    return ONE_OVER_SQRT_TWO_PI * np.exp(-0.5 * x**2.)
+    return ONE_OVER_SQRT_TWO_PI * np.exp(-0.5 * x * x)
 
 def norm_cdf(x):
     return 0.5 * (1. + erf(x / SQRT_TWO))
