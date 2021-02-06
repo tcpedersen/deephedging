@@ -2,35 +2,30 @@
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-from market_models import BlackScholes, ConstantRateBankAccount
-from constants import FLOAT_DTYPE
+from tf_agents.metrics import py_metrics
+from tf_agents.drivers.py_driver import PyDriver
+
+from environments import BlackScholesCallEnv
+from policies import BlackScholesDeltaPolicy
 
 maturity, asset_spot, strike = 1.25, 100, 100
-bank_spot = 1
 drift, rate, vol = 0.1, 0.01, 0.3
 
-asset_model = BlackScholes(drift, rate, vol)
-bank_model = ConstantRateBankAccount(rate)
+num_hedges_each_year = 2**13
 
-num_timesteps = 2**12
-num_paths = 10000
-dt = maturity / num_timesteps
+env = BlackScholesCallEnv(maturity, asset_spot, strike, drift, rate, vol,
+                          num_hedges_each_year)
+policy = BlackScholesDeltaPolicy(strike, drift, rate, vol)
 
-asset_paths = asset_model.sample_path(maturity, asset_spot, num_paths, num_timesteps, "p")
-bank_path = bank_model.sample_path(maturity, bank_spot, num_paths, num_timesteps)
+replay_buffer = []
+metric = py_metrics.AverageReturnMetric()
+observers = [replay_buffer.append, metric]
+driver = PyDriver(env, policy, observers, max_episodes=1)
 
-# initial holdings
-V = asset_model.call_price(maturity, asset_spot, strike)
-a = tf.ones(num_paths, FLOAT_DTYPE) * asset_model.call_delta(maturity, asset_spot, strike)
-b = (V - asset_spot * a) / bank_spot
+initial_time_step = env.reset()
+final_time_step, _ = driver.run(initial_time_step)
 
-for idx in range(1, num_timesteps + 1):
-    asset = asset_paths[:, idx]
-    bank = bank_path[idx]
-    V = a * asset + b * bank
-
-    a = asset_model.call_delta(maturity - dt * idx, asset, strike)
-    b = (V - asset * a) / bank
+print('Average Return: ', metric.result())
 
 # === stats
 payoff = (asset - strike) * tf.cast(asset > strike, FLOAT_DTYPE)

@@ -7,7 +7,7 @@ from collections import deque
 from constants import NP_FLOAT_DTYPE
 from market_models import BlackScholes, ConstantRateBankAccount
 
-class BSCallHedgeEnv(PyEnvironment):
+class BlackScholeCallsEnv(PyEnvironment):
     def __init__(self, maturity, spot, strike, drift, rate, vol,
                  num_hedges_each_year):
         self._asset_model = BlackScholes(drift, rate, vol)
@@ -56,24 +56,28 @@ class BSCallHedgeEnv(PyEnvironment):
         if self._episode_ended:
             return self.reset()
 
-        self._time_idx += 1
         time_to_maturity = self._maturity - self._time_step_size * self._time_idx
         self._asset_value = self._asset_path[self._time_idx]
         self._bank_value = self._bank_path[self._time_idx]
 
-        self._hedge_value = self._asset_holdings * self._asset_value \
-            + self._bank_holdings * self._bank_value
+        if self._time_idx > 0:
+            self._hedge_value = self._asset_holdings * self._asset_value \
+                + self._bank_holdings * self._bank_value
+        else:
+            self._hedge_value = -self._book_value
+
         self._book_value = - self._asset_model.call_price(
-            time_to_maturity,
-            self._asset_value,
-            self._strike)
+            time_to_maturity, self._asset_value, self._strike)
 
         self._asset_holdings = action
         self._bank_holdings = (self._hedge_value - self._asset_holdings \
                                * self._asset_value) / self._bank_value
-        reward = (self._book_value - self._hedge_value)**2
+
+        reward = -(self._book_value + self._hedge_value)**2
+        self._time_idx += 1
 
         if self._time_idx + 1 == len(self._asset_path):
+            assert time_to_maturity == 0
             self._episode_ended = True
             return ts.termination([time_to_maturity, self._asset_value], reward)
         else:

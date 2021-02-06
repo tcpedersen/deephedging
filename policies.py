@@ -2,6 +2,8 @@
 from tf_agents.policies.py_policy import PyPolicy
 from tf_agents.specs.array_spec import ArraySpec
 from tf_agents.trajectories import time_step as ts
+from tf_agents.trajectories.policy_step import PolicyStep
+
 
 from market_models import BlackScholes
 from constants import NP_FLOAT_DTYPE
@@ -18,4 +20,5 @@ class BlackScholesDeltaPolicy(PyPolicy):
 
     def _action(self, time_step, policy_state):
         maturity, spot = time_step.observation
-        return self._asset_model.call_delta(maturity, spot, self._strike)
+        action = self._asset_model.call_delta(maturity, spot, self._strike)
+        return PolicyStep(action)
