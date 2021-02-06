@@ -11,14 +11,14 @@ from derivative_books import BlackScholesPutCallBook, black_price, black_delta
 class test_black(TestCase):
     def test_black_univariate(self):
         params = [0.25,
-                  np.array([[110]]),
+                  np.array([110]),
                   np.array([90]),
                   0.05,
                   np.array([0.2]),
                   np.array([1])]
 
-        price_expected = np.array([[21.1765104079965]])
-        delta_expected = np.array([[0.985434416336097]])
+        price_expected = np.array([21.1765104079965])
+        delta_expected = np.array([0.985434416336097])
 
         price_result = black_price(*params)
         delta_result = black_delta(*params)
@@ -45,31 +45,24 @@ class test_BlackScholesPutCallBook(TestCase):
 
 
     def test_book_value_multivariate(self):
-        spot = np.array([[80, 140, 1.23],
-                         [90, 60, 1.24],
-                         [100, 80, 1.0],
-                         [110, 100, 1.84]])
+        spot = np.array([80, 140, 1.22])
         time = 0.25
 
-        prices_expected = np.zeros((spot.shape[0], self.book.get_book_size()))
-        deltas_expected = np.zeros((spot.shape[0], self.book.get_book_size()))
+        prices_expected = np.zeros(self.book.get_book_size())
+        deltas_expected = np.zeros(self.book.get_book_size())
 
         for book_idx in range(self.book.get_book_size()):
-            for path_idx in range(spot.shape[0]):
                 params = [self.book.maturity - time,
-                          spot[path_idx,
-                               self.book.linker[book_idx]][np.newaxis, np.newaxis],
-                          self.book.strike[book_idx][np.newaxis],
+                          spot[self.book.linker[book_idx]],
+                          self.book.strike[book_idx],
                           self.book.rate,
-                          self.book.volatility[self.book.linker[book_idx]][np.newaxis],
-                          self.book.put_call[book_idx][np.newaxis]
+                          self.book.volatility[self.book.linker[book_idx]],
+                          self.book.put_call[book_idx]
                           ]
 
                 sign = self.book.exposure[book_idx]
-                prices_expected[path_idx, book_idx] \
-                    = sign * black_price(*params)
-                deltas_expected[path_idx, book_idx] \
-                    = sign * black_delta(*params)
+                prices_expected[book_idx] = sign * black_price(*params)
+                deltas_expected[book_idx] = sign * black_delta(*params)
 
         prices_result = self.book.marginal_book_value(spot, time)
         deltas_result = self.book.marginal_book_delta(spot, time)
@@ -80,7 +73,7 @@ class test_BlackScholesPutCallBook(TestCase):
 
     def test_sample_paths(self):
         spot = np.array([85, 95, 1])
-        num_paths, num_steps = 2**21, 2
+        num_paths, num_steps = 2**17, 2
         sample = self.book.sample_paths(spot, num_paths, num_steps, True)
 
         expected_dims = (num_paths,
@@ -88,11 +81,11 @@ class test_BlackScholesPutCallBook(TestCase):
                          num_steps + 1)
         self.assertTupleEqual(sample.shape, expected_dims)
 
-        payoff = self.book.payoff(sample[:, :, -1])
+        payoff = np.apply_along_axis(self.book.payoff, 1, sample[:, :, -1])
         self.assertTupleEqual(payoff.shape, (num_paths, ))
 
         deflator = np.exp(-self.book.rate * self.book.maturity)
         price_result = deflator * payoff.mean(axis=0)
-        price_expected = self.book.book_value(spot[np.newaxis, :], 0)
+        price_expected = self.book.book_value(spot, 0)
 
         assert_array_almost_equal(price_result, price_expected, decimal=1)

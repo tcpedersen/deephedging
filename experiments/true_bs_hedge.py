@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from tf_agents.metrics import py_metrics
 from tf_agents.drivers.py_driver import PyDriver
 
-from derivative_books import BlackScholesPutCallBook
+from derivative_books import BlackScholesPutCallBook, DerivativeBook
 from environments import DerivativeBookHedgeEnv
 from policies import BlackScholesDeltaPolicy
 
@@ -47,9 +47,9 @@ print('Average Return: ', metric.result())
 # xmin, xmax = 80., 110.
 # x = tf.linspace(xmin, xmax, 1000)
 # y = (x - strike) * tf.cast(x > strike, FLOAT_DTYPE)
-# 
+#
 # inplot = (xmin < asset) & (asset < xmax)
-# 
+#
 # plt.figure()
 # plt.plot(x, y, color="black")
 # plt.scatter(tf.boolean_mask(asset, inplot), tf.boolean_mask(V, inplot),

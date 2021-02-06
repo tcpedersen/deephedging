@@ -25,7 +25,7 @@ class BlackScholesDeltaPolicy(PyPolicy):
     def _action(self, time_step, policy_state):
         market_size = self.book.get_market_size()
         time = time_step.observation[0]
-        state = time_step.observation[1:(market_size + 1)][np.newaxis, :]
-        deltas = -self.book.marginal_book_delta(state, time)[0, :]
+        state = time_step.observation[1:(market_size + 1)]
+        deltas = -self.book.marginal_book_delta(state, time)
         action = np.bincount(self.book.linker, deltas)
         return PolicyStep(action)

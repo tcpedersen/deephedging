@@ -8,40 +8,92 @@ from constants import NP_FLOAT_DTYPE, NP_INT_DTYPE
 # ==============================================================================
 # === Base
 class DerivativeBook(abc.ABC):
+    def setup_hedge(
+            self, state: np.ndarray, hedge: np.ndarray, value: float) -> None:
+        """Initialisation of DerivativeBook
+        Args:
+            state: (state_dimension, )
+            hedge: (market_size, )
+            value: desired value of hedge portfolio
+        Returns:
+            changes in hedge portfolio (market_size + 1, )
+        """
+        self.hedge = np.zeros(self.get_market_size() + 1, NP_FLOAT_DTYPE)
+        self.hedge[-1] = value / state[-1]
+        self.rebalance_hedge(state, hedge)
+
+        return self.hedge
+
+
+    def hedge_value(self, state: np.ndarray) -> np.ndarray:
+        """Compute value of hedge portfolio
+        Args:
+            state: (state_dimension, )
+        Returns:
+            value: (1, )
+        """
+        return self.hedge @ state[:(self.get_market_size() + 1)]
+
+
+    def rebalance_hedge(
+            self, state: np.ndarray, hedge: np.ndarray) -> np.ndarray:
+        """Rebalance hedge portfolio. Requires DerivativeBook.setup_hedge has
+        been run at least once beforehand.
+        Args:
+            state: (state_dimension, )
+            hedge: (market_size, )
+        Returns:
+            changes in hedge portfolio (market_size + 1, )
+        """
+        risk_change = hedge - self.hedge[:-1]
+        riskless_change = -risk_change @ state[:self.get_market_size()] \
+            / state[self.get_market_size()]
+        change = np.hstack([risk_change, riskless_change])
+        self.hedge += change
+
+        return change
+
+
     def get_state_dimension(self) -> int:
         """Returns the dimensionalility of the state."""
         return self.get_market_size() + 1 + self.get_non_market_size()
+
 
     @abc.abstractmethod
     def get_book_size(self) -> int:
         """Returns the number of derivatives in the book."""
 
+
     @abc.abstractmethod
     def get_market_size(self) -> int:
         """Returns the number of underlying risky tradabke processes."""
+
 
     @abc.abstractmethod
     def get_non_market_size(self) -> int:
         """Returns the number of underlying non-tradable processes."""
 
+
     @abc.abstractmethod
     def payoff(self, terminal_state: np.ndarray) -> np.ndarray:
         """Compute payoff from terminal state.
         Args:
-            terminal_state: (num_paths, market_size + 1 + non_market_size)
+            terminal_state: (state_dimension, )
         Returns:
-            payoff: (num_paths, )
+            payoff: (1, )
         """
+
 
     @abc.abstractmethod
     def book_value(self, state: np.ndarray, time: float) -> np.ndarray:
-        """Compute value of book for m different states.
+        """Compute value of book.
         Args:
-            state: (num_paths, market_size + 1 + non_market_size)
+            state: (state_dimension, )
             time: float
         Returns:
-            value: (num_paths, )
+            value: (1, )
         """
+
 
     @abc.abstractmethod
     def sample_paths(self,
@@ -51,13 +103,12 @@ class DerivativeBook(abc.ABC):
                      risk_neutral: bool) -> np.ndarray:
         """Simulate sample paths of risky assets.
         Args:
-            init_state: (market_size + 1 + non_market_size, )
+            init_state: (state_dimension, )
             num_paths: int
             num_steps: int
             risk_neutral: bool
         Returns:
-            sample paths: (num_paths, market_size + 1 + non_market_size,
-                           num_steps + 1)
+            sample paths: (num_paths, state_dimension, num_steps + 1)
         """
 
 # ==============================================================================
@@ -127,7 +178,8 @@ def simulate_geometric_brownian_motion(maturity: float,
         num_paths : int
         num_steps : int
     Returns:
-        Sample paths of a multivariate GBM (num_paths, market_size, num_steps + 1)
+        Sample paths of a multivariate GBM (num_paths, market_size,
+                                            num_steps + 1)
     """
     dt = maturity / num_steps
 
@@ -192,8 +244,8 @@ class BlackScholesPutCallBook(DerivativeBook):
 
     def payoff(self, terminal_state: np.ndarray) -> np.ndarray:
         """Implementation of payoff from DerivativeBook"""
-        tradable = terminal_state[:, :self.get_market_size()]
-        diff = self.put_call * (tradable[:, self.linker] - self.strike)
+        tradable = terminal_state[:self.get_market_size()]
+        diff = self.put_call * (tradable[self.linker] - self.strike)
         return (diff * (diff > 0)) @ self.exposure
 
     def marginal_book_value(self, state: np.ndarray, time:float) -> np.ndarray:
@@ -201,13 +253,13 @@ class BlackScholesPutCallBook(DerivativeBook):
             Args:
                 same as DerivativeBook.book_value
             Returns:
-                prices: (num_paths, book_size)
+                prices: (book_size, )
 
         """
-        tradable = state[:, :self.get_market_size()]
+        tradable = state[:self.get_market_size()]
         value = black_price(
             self.maturity - time,
-            tradable[:, self.linker],
+            tradable[self.linker],
             self.strike,
             self.rate,
             self.volatility[self.linker],
@@ -219,7 +271,7 @@ class BlackScholesPutCallBook(DerivativeBook):
 
     def book_value(self, state: np.ndarray, time: float) -> np.ndarray:
         """Implementation of book_value from DerivativeBook."""
-        return self.marginal_book_value(state, time).sum(axis=1)
+        return self.marginal_book_value(state, time).sum()
 
 
     def marginal_book_delta(self, state: np.ndarray, time:float) -> np.ndarray:
@@ -229,10 +281,9 @@ class BlackScholesPutCallBook(DerivativeBook):
             Returns:
                 gradient: (num_paths, book_size)
         """
-        tradable = state[:, :self.get_market_size()]
         gradient = black_delta(
             self.maturity - time,
-            tradable[:, self.linker],
+            state[:self.get_market_size()][self.linker],
             self.strike,
             self.rate,
             self.volatility[self.linker],

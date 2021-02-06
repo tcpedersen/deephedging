@@ -10,109 +10,112 @@ from constants import NP_FLOAT_DTYPE
 from derivative_books import DerivativeBook
 
 class DerivativeBookHedgeEnv(PyEnvironment):
-    def __init__(self, book, init_state, num_hedges, transaction_cost_scale):
+    def __init__(self, book, init_state, num_hedges, cost_scale):
         """Initialise DerivativeBookHedgeEnv
         Args:
             book: DerivativeBook
-            init_state: np.ndarray (market_size, state_dimension)
+            init_state: np.ndarray (state_dimension, )
             num_hedges: int
-            transaction_cost_scale: float
+            cost_scale: float
         Returns:
             None
         """
         assert issubclass(type(book), DerivativeBook)
 
         self.book = book
-        self.init_state = np.array(init_state, NP_FLOAT_DTYPE)
+        self.init_state = np.array(init_state, NP_FLOAT_DTYPE, ndmin=1)
         self.num_hedges = int(num_hedges)
-        self.transaction_cost_scale = float(transaction_cost_scale)
-
-        self.state_dimension = self.book.get_state_dimension()
+        self.cost_scale = float(cost_scale)
 
         self.num_paths_in_batch = 100
         self.time_step_size = self.book.maturity / self.num_hedges
 
         self.batch = deque()
 
-        self.action_spec = ArraySpec(
-            (self.book.get_market_size(), ), NP_FLOAT_DTYPE, "action")
-        self.observation_spec = ArraySpec(
-            (self.state_dimension, ), NP_FLOAT_DTYPE, "observation")
-        self.episode_ended = False
 
     def observation_spec(self):
-        return self.observation_spec
+        d = self.book.get_state_dimension() + self.book.get_market_size()
+        return ArraySpec((d, ), NP_FLOAT_DTYPE)
+
 
     def action_spec(self):
-        return self.action_spec
+        return ArraySpec(self.book.get_market_size(), NP_FLOAT_DTYPE)
+
+    def get_time(self):
+        return self.time_step_size * self.time_idx
+
+    def get_full_state(self):
+        return self.path[:, self.time_idx]
+
+    def get_market_state(self):
+        return self.path[:(self.book.get_market_size() + 1), self.time_idx]
 
     def _reset(self):
+        self._episode_ended = False
         self.time_idx = 0
+
         if not self.batch:
             self.fill_batch()
+        self.path = self.batch.pop()
 
         self.book_value = self.book.book_value(
-            self.init_state[np.newaxis, :], 0.)
+            self.get_full_state(), self.get_time())
+        empty_hedge = np.zeros(self.book.get_market_size())
+        observation = np.hstack(
+            [self.get_time(), self.get_full_state(), empty_hedge])
 
-        self.hedge = np.zeros(self.state_dimension, NP_FLOAT_DTYPE)
-        self.hedge_value = -self.book_value
+        return ts.restart(observation)
 
-        self.path = self.batch.pop()
-        self.observation = np.hstack([
-            0, self.path[:, self.time_idx], self.hedge])
-        self._episode_ended = False
+    def step_book_value(self):
+        prior = self.book_value
+        self.book_value = self.book.book_value(
+            self.get_full_state(), self.get_time())
 
-        return ts.restart(self.observation)
+        return self.book_value - prior
+
+
+    def step_hedge_value(self):
+        prior = self.hedge_value
+        self.hedge_value = self.book.hedge_value(self.get_full_state())
+
+        return self.hedge_value - prior
 
     def _step(self, action):
         if self._episode_ended:
             return self.reset()
 
         # action chosen at time t
-        time = self.time_step_size * self.time_idx
-        market_state = self.path[True, :, self.time_idx]
-        tradable = market_state[0, :(self.book.get_market_size() + 1)]
-
-        # rebalance portfolio
-        prior_hedge = self.hedge
-        self.hedge_value = tradable @ self.hedge
-        self.hedge[:self.book.get_market_size()] = action
-        self.hedge[-1] = (self.hedge_value - tradable[:-1] @ self.hedge[:-1]) \
-            / tradable[-1]
+        if self.time_idx == 0:
+            chg_hedge = self.book.setup_hedge(
+                self.get_full_state(), action, -self.book_value)
+            self.hedge_value = self.book.hedge_value(self.get_full_state())
+        else:
+            chg_hedge = self.book.rebalance_hedge(self.get_full_state(), action)
 
         # calculate costs
-        chg_hedge = abs(self.hedge - prior_hedge)
-        transaction_cost = self.transaction_cost_scale * tradable @ chg_hedge
+        transaction_cost = self.cost_scale \
+            * self.get_market_state() @ abs(chg_hedge)
 
         # move to time t + 1
         self.time_idx += 1
-        time = self.time_step_size * self.time_idx
-        market_state = self.path[True, :, self.time_idx]
-        tradable = market_state[0, :(self.book.get_market_size() + 1)]
-
-        prior_book_value = self.book_value
-        self.book_value = self.book.book_value(market_state, time)
-        chg_book_value = self.book_value - prior_book_value
-
-        prior_hedge_value = self.hedge_value
-        self.hedge_value = tradable @ self.hedge
-        chg_hedge_value = self.hedge_value - prior_hedge_value
+        chg_book_value = self.step_book_value()
+        chg_hedge_value = self.step_hedge_value()
 
         # liquidate hedge portfolio if episode is over
         if self.time_idx == self.num_hedges:
             transaction_cost += \
-                self.transaction_cost_scale * tradable @ abs(self.hedge)
+                self.cost_scale * self.get_market_state() @ abs(self.book.hedge)
 
         reward = float(chg_book_value + chg_hedge_value - transaction_cost)
 
-        self.observation = np.hstack(
-            [time, self.path[:, self.time_idx], self.hedge])
+        observation = np.hstack(
+            [self.get_time(), self.get_full_state(), self.book.hedge])
 
         if self.time_idx == self.num_hedges:
             self._episode_ended = True
-            return ts.termination(self.observation, reward)
+            return ts.termination(observation, reward)
         else:
-            return ts.transition(self.observation, reward)
+            return ts.transition(observation, reward)
 
     def fill_batch(self):
         paths = self.book.sample_paths(
