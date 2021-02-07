@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 
 from tf_agents.metrics import py_metrics
 from tf_agents.drivers.py_driver import PyDriver
 
-from derivative_books import BlackScholesPutCallBook, DerivativeBook
+from derivative_books import BlackScholesPutCallBook
 from environments import DerivativeBookHedgeEnv
 from policies import BlackScholesDeltaPolicy
 
@@ -36,12 +36,12 @@ policy = BlackScholesDeltaPolicy(book)
 replay_buffer = []
 metric = py_metrics.AverageReturnMetric()
 observers = [replay_buffer.append, metric]
-driver = PyDriver(env, policy, observers, max_episodes=250)
+driver = PyDriver(env, policy, observers, max_episodes=5000)
 
 initial_time_step = env.reset()
 final_time_step, _ = driver.run(initial_time_step)
 
-print('Average Return: ', metric.result())
+#print('Average Return: ', metric.result())
 
 # === plot
 # xmin, xmax = 80., 110.

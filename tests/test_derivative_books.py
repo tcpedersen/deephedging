@@ -73,7 +73,7 @@ class test_BlackScholesPutCallBook(TestCase):
 
     def test_sample_paths(self):
         spot = np.array([85, 95, 1])
-        num_paths, num_steps = 2**17, 2
+        num_paths, num_steps = 2**19, 2
         sample = self.book.sample_paths(spot, num_paths, num_steps, True)
 
         expected_dims = (num_paths,

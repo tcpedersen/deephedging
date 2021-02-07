@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import abc
+import math
 
 from utils import norm_cdf
 from constants import NP_FLOAT_DTYPE, NP_INT_DTYPE
@@ -8,8 +9,10 @@ from constants import NP_FLOAT_DTYPE, NP_INT_DTYPE
 # ==============================================================================
 # === Base
 class DerivativeBook(abc.ABC):
-    def setup_hedge(
-            self, state: np.ndarray, hedge: np.ndarray, value: float) -> None:
+    def setup_hedge(self,
+                    state: np.ndarray,
+                    hedge: np.ndarray,
+                    value: float) -> np.ndarray:
         """Initialisation of DerivativeBook
         Args:
             state: (state_dimension, )
@@ -26,7 +29,8 @@ class DerivativeBook(abc.ABC):
 
 
     def hedge_value(self, state: np.ndarray) -> np.ndarray:
-        """Compute value of hedge portfolio
+        """Compute value of hedge portfolio. Assumes DerivativeBook.setup_hedge
+        has been run at least once beforehand.
         Args:
             state: (state_dimension, )
         Returns:
@@ -37,7 +41,7 @@ class DerivativeBook(abc.ABC):
 
     def rebalance_hedge(
             self, state: np.ndarray, hedge: np.ndarray) -> np.ndarray:
-        """Rebalance hedge portfolio. Requires DerivativeBook.setup_hedge has
+        """Rebalance hedge portfolio. Assumes DerivativeBook.setup_hedge has
         been run at least once beforehand.
         Args:
             state: (state_dimension, )
@@ -126,14 +130,16 @@ def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
         price: (num_paths, book_size)
     """
     if time_to_maturity > 0:
-        forward = spot * np.exp(rate * time_to_maturity)
+        deflator = math.exp(-rate * time_to_maturity)
+        forward = spot / deflator
         m = np.log(forward / strike)
-        v = (volatility * np.sqrt(time_to_maturity))
-        delta = np.exp(-rate * time_to_maturity)
+        v = volatility * math.sqrt(time_to_maturity)
+        m_over_v = m / v
+        v_over_2 = v / 2.
 
-        return delta * theta \
-            * (forward * norm_cdf(theta * (m / v + v / 2.)) \
-               - strike * norm_cdf(theta * (m / v - v / 2.)))
+        return deflator * theta \
+            * (forward * norm_cdf(theta * (m_over_v + v_over_2)) \
+               - strike * norm_cdf(theta * (m_over_v - v_over_2)))
     else:
         diff = theta * (spot - strike)
         return diff * (diff > 0)
@@ -151,10 +157,10 @@ def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
     Returns:
         delta: (num_paths, book_size)
     """
-    if time_to_maturity:
-        forward = spot * np.exp(rate * time_to_maturity)
+    if time_to_maturity > 0:
+        forward = spot * math.exp(rate * time_to_maturity)
         m = np.log(forward / strike)
-        v = (volatility * np.sqrt(time_to_maturity))
+        v = volatility * math.sqrt(time_to_maturity)
 
         return theta * norm_cdf(theta * (m / v + v / 2.))
     else:
@@ -181,19 +187,20 @@ def simulate_geometric_brownian_motion(maturity: float,
         Sample paths of a multivariate GBM (num_paths, market_size,
                                             num_steps + 1)
     """
-    dt = maturity / num_steps
-
-    mean = np.zeros_like(init_state)
+    zero_mean = np.zeros_like(drift)
     rvs = np.random.default_rng().multivariate_normal(
-        mean, correlation, size=(num_paths, num_steps))
+        zero_mean, correlation, size=(num_paths, num_steps))
+
+    dt = maturity / num_steps
+    m = (drift - volatility * volatility / 2.) * dt
+    v = volatility * math.sqrt(dt)
+    rvs = np.exp(m + v * rvs)
 
     paths = np.zeros((num_paths, len(init_state), num_steps + 1))
     paths[:, :, 0] = init_state
 
     for idx in range(num_steps):
-        paths[:, :, idx + 1] = paths[:, :, idx] \
-            * np.exp((drift - volatility**2 / 2) * dt \
-                     + volatility * np.sqrt(dt) * rvs[:, idx, :])
+        paths[:, :, idx + 1] = paths[:, :, idx] * rvs[:, idx]
 
     return paths
 
@@ -233,20 +240,28 @@ class BlackScholesPutCallBook(DerivativeBook):
         self.correlation = (self.diffusion @ self.diffusion.T) \
             / (self.volatility[:, np.newaxis] @ self.volatility[np.newaxis, :])
 
+        self._book_size = len(self.strike)
+        self._market_size = len(self.drift)
+
+
     def get_book_size(self):
-        return len(self.strike)
+        return self._book_size
+
 
     def get_market_size(self):
-        return len(self.drift)
+        return self._market_size
+
 
     def get_non_market_size(self):
         return 0
+
 
     def payoff(self, terminal_state: np.ndarray) -> np.ndarray:
         """Implementation of payoff from DerivativeBook"""
         tradable = terminal_state[:self.get_market_size()]
         diff = self.put_call * (tradable[self.linker] - self.strike)
         return (diff * (diff > 0)) @ self.exposure
+
 
     def marginal_book_value(self, state: np.ndarray, time:float) -> np.ndarray:
         """Computes value of each individual option.
@@ -256,10 +271,9 @@ class BlackScholesPutCallBook(DerivativeBook):
                 prices: (book_size, )
 
         """
-        tradable = state[:self.get_market_size()]
         value = black_price(
             self.maturity - time,
-            tradable[self.linker],
+            state[self.linker],
             self.strike,
             self.rate,
             self.volatility[self.linker],
@@ -283,7 +297,7 @@ class BlackScholesPutCallBook(DerivativeBook):
         """
         gradient = black_delta(
             self.maturity - time,
-            state[:self.get_market_size()][self.linker],
+            state[self.linker],
             self.strike,
             self.rate,
             self.volatility[self.linker],
@@ -298,7 +312,7 @@ class BlackScholesPutCallBook(DerivativeBook):
                      num_paths: int,
                      num_steps: int,
                      risk_neutral: bool) -> np.ndarray:
-        """Implementation of sample_risky_assets from DerivativeBook"""
+        """Implementation of sample_paths from DerivativeBook"""
         measure_drift = np.full_like(self.drift, self.rate) if risk_neutral \
             else self.drift
 

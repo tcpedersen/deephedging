@@ -41,14 +41,18 @@ class DerivativeBookHedgeEnv(PyEnvironment):
     def action_spec(self):
         return ArraySpec(self.book.get_market_size(), NP_FLOAT_DTYPE)
 
+
     def get_time(self):
         return self.time_step_size * self.time_idx
+
 
     def get_full_state(self):
         return self.path[:, self.time_idx]
 
+
     def get_market_state(self):
         return self.path[:(self.book.get_market_size() + 1), self.time_idx]
+
 
     def _reset(self):
         self._episode_ended = False
@@ -66,6 +70,7 @@ class DerivativeBookHedgeEnv(PyEnvironment):
 
         return ts.restart(observation)
 
+
     def step_book_value(self):
         prior = self.book_value
         self.book_value = self.book.book_value(
@@ -79,6 +84,7 @@ class DerivativeBookHedgeEnv(PyEnvironment):
         self.hedge_value = self.book.hedge_value(self.get_full_state())
 
         return self.hedge_value - prior
+
 
     def _step(self, action):
         if self._episode_ended:
@@ -116,6 +122,7 @@ class DerivativeBookHedgeEnv(PyEnvironment):
             return ts.termination(observation, reward)
         else:
             return ts.transition(observation, reward)
+
 
     def fill_batch(self):
         paths = self.book.sample_paths(
