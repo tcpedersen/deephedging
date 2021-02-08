@@ -78,24 +78,54 @@ class DerivativeBook(abc.ABC):
         """Returns the number of underlying non-tradable processes."""
 
 
+    def _force_state_shape(self, state: np.ndarray) -> np.ndarray:
+        """Reformats input based on dimensionality.
+        Args:
+            state: state_like
+        Returns:
+            state: (num_samples, state_dimension, num_steps + 1)
+        """
+        state = np.array(state, NP_FLOAT_DTYPE, ndmin=1)
+
+        dimension = state.ndim
+        if dimension == 1:
+            return state[np.newaxis, :, np.newaxis]
+        elif dimension == 2:
+            return state[:, :, np.newaxis]
+        elif dimension == 3:
+            return state
+        else:
+            raise ValueError(f"dimensionality {dimension} > 3.")
+
+
+    def payoff(self, state: np.ndarray) -> np.ndarray:
+        """Wrapper for DerivativeBook.payoff."""
+        return self._payoff(self._force_state_shape(state))
+
+
     @abc.abstractmethod
-    def payoff(self, terminal_state: np.ndarray) -> np.ndarray:
+    def _payoff(self, state: np.ndarray) -> np.ndarray:
         """Compute payoff from terminal state.
         Args:
-            terminal_state: (state_dimension, )
+            state: (num_samples, state_dimension, num_steps + 1)
         Returns:
-            payoff: (1, )
+            payoff: (num_samples, )
         """
 
 
+    def book_value(self, state: np.ndarray, time:float) -> np.ndarray:
+        """Wrapper for DerivativeBook._book_value."""
+        return self._book_value(self._force_state_shape(state), time)
+
+
     @abc.abstractmethod
-    def book_value(self, state: np.ndarray, time: float) -> np.ndarray:
+    def _book_value(self, state: np.ndarray, time: float) -> np.ndarray:
         """Compute value of book.
         Args:
-            state: (state_dimension, )
+            state: (num_samples, state_dimension, num_steps + 1)
             time: float
         Returns:
-            value: (1, )
+            value: (num_samples, )
         """
 
 
@@ -121,13 +151,13 @@ def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
     """Returns price in Black's model.
     Args:
         time_to_maturity: float
-        spot: (num_paths, book_size)
+        spot: (num_samples, book_size)
         strike: (book_size, )
         rate: float
         volatility: (book_size, )
         theta: (book_size, )
     Returns:
-        price: (num_paths, book_size)
+        price: (num_samples, book_size)
     """
     if time_to_maturity > 0:
         deflator = math.exp(-rate * time_to_maturity)
@@ -149,13 +179,13 @@ def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
     """Returns delta in Black's model.
     Args:
         time_to_maturity: float
-        spot: (num_pats, book_size)
+        spot: (num_samples, book_size)
         strike: (book_size, )
         rate: float
         volatility: (book_size, )
         theta: (book_size, )
     Returns:
-        delta: (num_paths, book_size)
+        delta: (num_samples, book_size)
     """
     if time_to_maturity > 0:
         forward = spot * math.exp(rate * time_to_maturity)
@@ -243,7 +273,7 @@ class BlackScholesPutCallBook(DerivativeBook):
         self._book_size = len(self.strike)
         self._market_size = len(self.drift)
 
-
+    # === abstract base class implementations
     def get_book_size(self):
         return self._book_size
 
@@ -256,55 +286,18 @@ class BlackScholesPutCallBook(DerivativeBook):
         return 0
 
 
-    def payoff(self, terminal_state: np.ndarray) -> np.ndarray:
-        """Implementation of payoff from DerivativeBook"""
-        tradable = terminal_state[:self.get_market_size()]
-        diff = self.put_call * (tradable[self.linker] - self.strike)
+    def _payoff(self, state: np.ndarray) -> np.ndarray:
+        """Implementation of DerivativeBook._payoff."""
+        tradable = self._get_tradables(state)
+        diff = self.put_call * (tradable[:, self.linker] - self.strike)
         return (diff * (diff > 0)) @ self.exposure
 
 
-    def marginal_book_value(self, state: np.ndarray, time:float) -> np.ndarray:
-        """Computes value of each individual option.
-            Args:
-                same as DerivativeBook.book_value
-            Returns:
-                prices: (book_size, )
-
-        """
-        value = black_price(
-            self.maturity - time,
-            state[self.linker],
-            self.strike,
-            self.rate,
-            self.volatility[self.linker],
-            self.put_call
-            )
-
-        return self.exposure * value
-
-
-    def book_value(self, state: np.ndarray, time: float) -> np.ndarray:
-        """Implementation of book_value from DerivativeBook."""
-        return self.marginal_book_value(state, time).sum()
-
-
-    def marginal_book_delta(self, state: np.ndarray, time:float) -> np.ndarray:
-        """Computes delta of each individual option.
-            Args:
-                same as DerivativeBook.book_value
-            Returns:
-                gradient: (num_paths, book_size)
-        """
-        gradient = black_delta(
-            self.maturity - time,
-            state[self.linker],
-            self.strike,
-            self.rate,
-            self.volatility[self.linker],
-            self.put_call
-            )
-
-        return self.exposure * gradient
+    def _book_value(self, state: np.ndarray, time: float) -> np.ndarray:
+        """Implementation of DerivativeBook.book_value."""
+        tradable = self._get_tradables(state)
+        values = self._marginal_book_value(tradable, time)
+        return values.sum(axis=1)
 
 
     def sample_paths(self,
@@ -334,3 +327,68 @@ class BlackScholesPutCallBook(DerivativeBook):
         riskless = np.tile(single_path, (num_paths, 1))
 
         return np.concatenate((risk, riskless[:, np.newaxis, :]), axis=1)
+
+
+    # === other
+    def _get_tradables(self, state: np.ndarray) -> np.ndarray:
+        """Extract tradable assets from state.
+        Args:
+            state: see DerivativeBook._force_state_shape
+        Returns:
+            tradable: (num_samples, market_size)
+        """
+        return state[:, :self.get_market_size(), -1]
+
+
+    def _marginal_book_value(self, tradables: np.ndarray, time: float) -> np.ndarray:
+        """Computes value of each individual option.
+            Args:
+                tradables: see _get_tradables.
+            Returns:
+                prices: (num_samples, book_size)
+
+        """
+        value = black_price(
+            self.maturity - time,
+            tradables[:, self.linker],
+            self.strike,
+            self.rate,
+            self.volatility[self.linker],
+            self.put_call
+            )
+
+        return self.exposure * value
+
+
+    def book_delta(self, state: np.ndarray, time: float) -> np.ndarray:
+        """Computes gradient of book wrt. underlying tradables
+        Args:
+            state_like
+        Returns:
+            gradient: (num_samples, market_size)
+        """
+        state = super()._force_state_shape(state)
+        tradable = self._get_tradables(state)
+        gradient = self._marginal_book_delta(tradable, time)
+        return np.apply_along_axis(
+            lambda x: np.bincount(self.linker, x), 1, gradient)
+
+
+    def _marginal_book_delta(self,
+                             tradables: np.ndarray, time:float) -> np.ndarray:
+        """Computes delta of each individual option.
+            Args:
+                see _get_tradables
+            Returns:
+                gradient: (num_paths, book_size)
+        """
+        gradient = black_delta(
+            self.maturity - time,
+            tradables[:, self.linker],
+            self.strike,
+            self.rate,
+            self.volatility[self.linker],
+            self.put_call
+            )
+
+        return gradient * self.exposure
