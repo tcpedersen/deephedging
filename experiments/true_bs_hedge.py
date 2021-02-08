@@ -2,16 +2,16 @@
 import numpy as np
 #import matplotlib.pyplot as plt
 
-from tf_agents.metrics import py_metrics
-from tf_agents.drivers.py_driver import PyDriver
-
 from derivative_books import BlackScholesPutCallBook
 from environments import DerivativeBookHedgeEnv
 from policies import BlackScholesDeltaPolicy
+from metrics import CumulativeRewardMetric
 
 # ==============================================================================
 # === hyperparameters
 num_hedges = 52
+batch_size = int(10**6 / 250)
+max_episodes = 250
 
 # ==============================================================================
 # === define book
@@ -30,18 +30,24 @@ book = BlackScholesPutCallBook(
 # ==============================================================================
 # === define environment
 init_state = np.array([85, 95, 1])
-env = DerivativeBookHedgeEnv(book, init_state, num_hedges, 0.)
+env = DerivativeBookHedgeEnv(book, init_state, num_hedges, 0., batch_size)
 policy = BlackScholesDeltaPolicy(book)
+metrics = [CumulativeRewardMetric()]
 
-replay_buffer = []
-metric = py_metrics.AverageReturnMetric()
-observers = [replay_buffer.append, metric]
-driver = PyDriver(env, policy, observers, max_episodes=5000)
+num_episode = 0
 
-initial_time_step = env.reset()
-final_time_step, _ = driver.run(initial_time_step)
+while num_episode < max_episodes:
+    time_step = env.reset()
 
-#print('Average Return: ', metric.result())
+    while not time_step.terminated:
+        action_step = policy.action(time_step)
+        next_time_step = env.step(action_step)
+
+        for metric in metrics:
+            metric.load(time_step, action_step)
+
+        time_step = next_time_step
+    num_episode += 1
 
 # === plot
 # xmin, xmax = 80., 110.

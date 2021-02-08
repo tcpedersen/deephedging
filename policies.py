@@ -1,30 +1,29 @@
 # -*- coding: utf-8 -*-
-import numpy as np
+import abc
 
-from tf_agents.policies.py_policy import PyPolicy
-from tf_agents.specs.array_spec import ArraySpec
-from tf_agents.trajectories import time_step as ts
-from tf_agents.trajectories.policy_step import PolicyStep
+import timestep as ts
+from timestep import ActionStep
 
 from derivative_books import BlackScholesPutCallBook
-from constants import NP_FLOAT_DTYPE
 
-class BlackScholesDeltaPolicy(PyPolicy):
+# ==============================================================================
+# === Policy
+class Policy(abc.ABC):
+    @abc.abstractmethod
+    def _action(self, time_step: ts.TimeStep) -> ActionStep:
+        """Returns action following the time_step."""
+
+    def action(self, time_step: ts.TimeStep) -> ActionStep:
+        return self._action(time_step)
+
+class BlackScholesDeltaPolicy(Policy):
     def __init__(self, book):
         assert isinstance(book, BlackScholesPutCallBook)
         self.book = book
 
-        state_dimension = self.book.get_state_dimension()
+    def _action(self, time_step):
         market_size = self.book.get_market_size()
-        input_size = 1 + state_dimension + market_size # +1 for time
-        input_array_spec = ArraySpec((input_size, ), NP_FLOAT_DTYPE)
-        super().__init__(
-            time_step_spec=ts.time_step_spec(input_array_spec),
-            action_spec=ArraySpec((market_size, ), NP_FLOAT_DTYPE))
-
-    def _action(self, time_step, policy_state):
-        market_size = self.book.get_market_size()
-        time = time_step.observation[0]
-        state = time_step.observation[1:(market_size + 1)]
-        action = -self.book.marginal_book_delta(state, time)
-        return PolicyStep(action)
+        time = time_step.observation[0, 0]
+        state = time_step.observation[:, 1:(market_size + 1)]
+        action = -self.book.book_delta(state, time)
+        return ActionStep(action)

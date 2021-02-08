@@ -15,14 +15,15 @@ class DerivativeBook(abc.ABC):
                     value: float) -> np.ndarray:
         """Initialisation of DerivativeBook
         Args:
-            state: (state_dimension, )
-            hedge: (market_size, )
-            value: desired value of hedge portfolio
+            state: state_like
+            hedge: (num_samples, market_size)
+            value: (num_samples, )
         Returns:
-            changes in hedge portfolio (market_size + 1, )
+            changes in hedge portfolio (num_samples, market_size + 1, )
         """
-        self.hedge = np.zeros(self.get_market_size() + 1, NP_FLOAT_DTYPE)
-        self.hedge[-1] = value / state[-1]
+        state = self._force_state_shape(state)
+        self.hedge = np.zeros_like(state[:, :(self.get_market_size() + 1), -1])
+        self.hedge[:, -1] = value / state[:, -1, -1]
         self.rebalance_hedge(state, hedge)
 
         return self.hedge
@@ -32,11 +33,12 @@ class DerivativeBook(abc.ABC):
         """Compute value of hedge portfolio. Assumes DerivativeBook.setup_hedge
         has been run at least once beforehand.
         Args:
-            state: (state_dimension, )
+            state: state_like
         Returns:
-            value: (1, )
+            value: (num_samples, )
         """
-        return self.hedge @ state[:(self.get_market_size() + 1)]
+        state = self._force_state_shape(state)
+        return (self.hedge * state[:, :(self.get_market_size() + 1), -1]).sum(axis=1)
 
 
     def rebalance_hedge(
@@ -44,15 +46,16 @@ class DerivativeBook(abc.ABC):
         """Rebalance hedge portfolio. Assumes DerivativeBook.setup_hedge has
         been run at least once beforehand.
         Args:
-            state: (state_dimension, )
-            hedge: (market_size, )
+            state: state_like
+            hedge: (num_samples, market_size)
         Returns:
-            changes in hedge portfolio (market_size + 1, )
+            changes in hedge portfolio (num_samples, market_size + 1)
         """
-        risk_change = hedge - self.hedge[:-1]
-        riskless_change = -risk_change @ state[:self.get_market_size()] \
-            / state[self.get_market_size()]
-        change = np.hstack([risk_change, riskless_change])
+        state = self._force_state_shape(state)
+        risk_change = hedge - self.hedge[:, :-1]
+        risk_value_change = (risk_change * state[:, :self.get_market_size(), -1]).sum(axis=1)
+        riskless_change = -risk_value_change / state[:, self.get_market_size(), -1]
+        change = np.hstack([risk_change, riskless_change[:, np.newaxis]])
         self.hedge += change
 
         return change
