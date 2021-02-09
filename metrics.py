@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-import numpy as np
+import tensorflow as tf
 import abc
 
 from timestep import ActionStep, TimeStep
-from constants import NP_FLOAT_DTYPE
 
 # ==============================================================================
 # === Metrics
@@ -21,7 +20,7 @@ class CumulativeRewardMetric(object):
         self.mean_reward = []
 
     def load(self, time_step: TimeStep, action_step: ActionStep):
-        self.mean_reward.append(time_step.reward.mean())
+        self.mean_reward.append(tf.reduce_mean(time_step.reward))
 
     def result(self):
-        return np.cumsum(np.array(self.mean_reward, NP_FLOAT_DTYPE))
+        return tf.cumsum(tf.concat(self.mean_reward, 0))

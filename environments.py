@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import tensorflow as tf
 import numpy as np
 import math
 import abc
@@ -13,9 +14,21 @@ from derivative_books import DerivativeBook
 # ==============================================================================
 # === Environments
 class Environment(abc.ABC):
+    @property
     @abc.abstractmethod
     def batch_size(self) -> int:
-        """Returns size of batch."""
+        """Size of batch"""
+
+    @property
+    @abc.abstractmethod
+    def action_dimension(self) -> int:
+        """Dimensionality of action."""
+
+    @property
+    @abc.abstractmethod
+    def observation_dimension(self) -> int:
+        """Dimensionality of observation."""
+
 
     def reset(self) -> TimeStep:
         """Wrapper for _reset."""
@@ -67,14 +80,26 @@ class DerivativeBookHedgeEnv(Environment):
         self.time_step_size = self.book.maturity / self.num_hedges
 
         self.max_paths_in_memory = 10000
-        if self.batch_size() > self.max_paths_in_memory:
-            self.max_paths_in_memory = self.batch_size()
+        if self.batch_size > self.max_paths_in_memory:
+            self.max_paths_in_memory = self.batch_size
         self.size_batch_of_paths = math.floor(
-            self.max_paths_in_memory / self.batch_size())
+            self.max_paths_in_memory / self.batch_size)
         self.batch_of_paths = deque()
 
+    @property
     def batch_size(self) -> int:
         return self._batch_size
+
+
+    @property
+    def action_dimension(self) -> int:
+        return self.book.market_size
+
+
+    @property
+    def observation_dimension(self) -> int:
+        return 1 + self.book.state_dimension + self.book.market_size
+
 
     def get_time(self):
         return self.time_step_size * self.time_idx
@@ -85,7 +110,7 @@ class DerivativeBookHedgeEnv(Environment):
 
 
     def get_market_state(self):
-        return self.paths[:, :(self.book.get_market_size() + 1), self.time_idx]
+        return self.paths[:, :(self.book.market_size + 1), self.time_idx]
 
 
     def _reset(self):
@@ -99,8 +124,8 @@ class DerivativeBookHedgeEnv(Environment):
         self.book_value = self.book.book_value(
             self.get_full_state(), self.get_time())
 
-        empty_hedge = np.zeros((self.batch_size(), self.book.get_market_size()))
-        time = np.tile(self.get_time(), (self.batch_size(), 1))
+        empty_hedge = np.zeros((self.batch_size, self.book.market_size))
+        time = np.tile(self.get_time(), (self.batch_size, 1))
         observation = np.hstack([time, self.get_full_state(), empty_hedge])
 
         return ts.restart(observation)
@@ -153,8 +178,9 @@ class DerivativeBookHedgeEnv(Environment):
 
         reward = chg_book_value + chg_hedge_value - transaction_cost
 
-        time = np.tile(self.get_time(), (self.batch_size(), 1))
-        observation = np.hstack([time, self.get_full_state(), self.book.hedge])
+        time = np.tile(self.get_time(), (self.batch_size, 1))
+        observation = tf.concat(
+            [time, self.get_full_state(), self.book.hedge[:, :-1]], 1)
 
         if self.time_idx == self.num_hedges:
             self._episode_ended = True
@@ -164,7 +190,7 @@ class DerivativeBookHedgeEnv(Environment):
 
 
     def fill_batch_of_paths(self):
-        num_paths = self.size_batch_of_paths * self.batch_size()
+        num_paths = self.size_batch_of_paths * self.batch_size
         paths = self.book.sample_paths(
             self.init_state, num_paths, self.num_hedges, False)
 

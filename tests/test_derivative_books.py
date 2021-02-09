@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import numpy as np
+import tensorflow as tf
 import math
 
 from unittest import TestCase
 from numpy.testing import assert_array_almost_equal
+from tensorflow.debugging import assert_near
 
 from derivative_books import BlackScholesPutCallBook, black_price, black_delta
 
@@ -54,17 +56,17 @@ class test_BlackScholesPutCallBook(TestCase):
         time = 1.25
 
         num_samples = state.shape[0]
-        prices_expected = np.zeros((num_samples, self.book.get_book_size()))
-        deltas_expected = np.zeros((num_samples, self.book.get_book_size()))
+        prices_expected = np.zeros((num_samples, self.book.book_size))
+        deltas_expected = np.zeros((num_samples, self.book.book_size))
 
-        for book_idx in range(self.book.get_book_size()):
+        for book_idx in range(self.book.book_size):
             for path_idx in range(num_samples):
                 params = [self.book.maturity - time,
-                          state[path_idx, self.book.linker[book_idx], -1, True],
-                          self.book.strike[book_idx, True],
+                          state[path_idx, self.book.linker[book_idx], -1],
+                          self.book.strike[book_idx],
                           self.book.rate,
-                          self.book.volatility[self.book.linker[book_idx], True],
-                          self.book.put_call[book_idx, True]
+                          self.book.volatility[self.book.linker[book_idx]],
+                          self.book.put_call[book_idx]
                           ]
 
                 sign = self.book.exposure[book_idx]
@@ -76,34 +78,33 @@ class test_BlackScholesPutCallBook(TestCase):
         marginal_prices_expected = prices_expected
         marginal_prices_result = self.book._marginal_book_value(
             state[:, :, -1], time)
-        assert_array_almost_equal(
-            marginal_prices_result, marginal_prices_expected)
+        assert_near(marginal_prices_result, marginal_prices_expected)
 
         prices_result = self.book.book_value(state, time)
-        assert_array_almost_equal(prices_result, prices_expected.sum(axis=1))
+        assert_near(prices_result, prices_expected.sum(axis=1))
 
         deltas_expected = np.apply_along_axis(
             lambda x: np.bincount(self.book.linker, x), 1, deltas_expected)
         deltas_result = self.book.book_delta(state, time)
-        assert_array_almost_equal(deltas_result, deltas_expected)
+        assert_near(deltas_result, deltas_expected)
 
 
     def test_sample_paths(self):
         np.random.seed(1)
         spot = np.array([85, 95, 1])
-        num_paths, num_steps = 2**23, 2
+        num_paths, num_steps = 2**21, 2
         sample = self.book.sample_paths(spot, num_paths, num_steps, True)
 
         expected_dims = (num_paths,
-                         self.book.get_market_size() + 1,
+                         self.book.market_size + 1,
                          num_steps + 1)
-        self.assertTupleEqual(sample.shape, expected_dims)
+        self.assertTupleEqual(tuple(sample.shape), expected_dims)
 
         payoff = self.book.payoff(sample)
-        self.assertTupleEqual(payoff.shape, (num_paths, ))
+        self.assertTupleEqual(tuple(payoff.shape), (num_paths, ))
 
         deflator = math.exp(-self.book.rate * self.book.maturity)
-        price_result = deflator * payoff.mean(axis=0)
+        price_result = deflator * tf.reduce_mean(payoff, axis=0)
         price_expected = self.book.book_value(spot, 0)
 
         assert_array_almost_equal(price_result, price_expected, decimal=2)

@@ -1,22 +1,23 @@
 # -*- coding: utf-8 -*-
-import numpy as np
-from constants import NP_FLOAT_DTYPE
+import tensorflow as tf
+from constants import FLOAT_DTYPE
 
 # ==============================================================================
 # === TimeStep
 class TimeStep(object):
     def __init__(self,
-                 observation: np.ndarray,
-                 reward: np.ndarray,
+                 observation: tf.Tensor,
+                 reward: tf.Tensor,
                  terminated: bool):
-        self.observation = np.array(observation, NP_FLOAT_DTYPE, ndmin=2)
-        self.reward = np.array(reward, NP_FLOAT_DTYPE, ndmin=1)
+        # TODO check if not tensor before converting, otherwise do not convert.
+        self.observation = tf.convert_to_tensor(observation, FLOAT_DTYPE)
+        self.reward = tf.convert_to_tensor(reward, FLOAT_DTYPE)
         self.terminated = bool(terminated)
 
 
 def restart(observation):
     batch_size, d = observation.shape
-    return TimeStep(observation, np.zeros(batch_size, NP_FLOAT_DTYPE), False)
+    return TimeStep(observation, tf.zeros(batch_size, FLOAT_DTYPE), False)
 
 def transition(observation, reward):
     return TimeStep(observation, reward, False)
@@ -27,5 +28,5 @@ def termination(observation, reward):
 # ==============================================================================
 # === Action
 class ActionStep(object):
-    def __init__(self, action):
-        self.action = np.array(action, NP_FLOAT_DTYPE, ndmin=2)
+    def __init__(self, action: tf.Tensor):
+        self.action = tf.convert_to_tensor(action, FLOAT_DTYPE)

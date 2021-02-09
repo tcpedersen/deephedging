@@ -1,35 +1,24 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
-from derivative_books import BlackScholesPutCallBook
+from derivative_books import random_black_scholes_put_call_book
 from environments import DerivativeBookHedgeEnv
 from policies import BlackScholesDeltaPolicy
 from metrics import CumulativeRewardMetric
 
 # ==============================================================================
 # === hyperparameters
-num_hedges = 52
-batch_size = int(10**6 / 250)
-max_episodes = 250
+num_hedges = 1000
+batch_size = 1
+max_episodes = 25
 
 # ==============================================================================
 # === define book
-maturity = 1.
-strike = np.array([80, 90, 100])
-drift = np.array([0.02, 0.03])
-rate = 0.01
-diffusion = np.array([[0.15, 0.2, 0.25], [0.2, 0.45, 0.05]])
-put_call = np.array([-1, 1, 1])
-exposure = np.array([1, 1, -1])
-linker = np.array([0, 1, 0])
-
-book = BlackScholesPutCallBook(
-    maturity, strike, drift, rate, diffusion, put_call, exposure, linker)
+init_state, book = random_black_scholes_put_call_book(20, 7, 7)
 
 # ==============================================================================
 # === define environment
-init_state = np.array([85, 95, 1])
 env = DerivativeBookHedgeEnv(book, init_state, num_hedges, 0., batch_size)
 policy = BlackScholesDeltaPolicy(book)
 metrics = [CumulativeRewardMetric()]
@@ -48,6 +37,11 @@ while num_episode < max_episodes:
 
         time_step = next_time_step
     num_episode += 1
+
+plt.figure()
+time = np.linspace(0., book.maturity, len(metric.result()))
+plt.plot(time, metric.result())
+plt.show()
 
 # === plot
 # xmin, xmax = 80., 110.

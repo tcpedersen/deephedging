@@ -3,7 +3,6 @@ import abc
 
 import timestep as ts
 from timestep import ActionStep
-
 from derivative_books import BlackScholesPutCallBook
 
 # ==============================================================================
@@ -22,7 +21,7 @@ class BlackScholesDeltaPolicy(Policy):
         self.book = book
 
     def _action(self, time_step):
-        market_size = self.book.get_market_size()
+        market_size = self.book.market_size
         time = time_step.observation[0, 0]
         state = time_step.observation[:, 1:(market_size + 1)]
         action = -self.book.book_delta(state, time)
