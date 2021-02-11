@@ -113,6 +113,16 @@ class DerivativeBookHedgeEnv(Environment):
         return self.paths[:, :(self.book.market_size + 1), self.time_idx]
 
 
+    def risk_measure(self, pnl_change: tf.Tensor) -> tf.Tensor:
+        """Compute the risk associated with a change in PnL.
+            Args:
+                tf.Tensor: (batch_size, )
+            Returns:
+                tf.Tensor: (batch_size, )
+        """
+        return -tf.square(pnl_change)
+
+
     def _reset(self):
         self._episode_ended = False
         self.time_idx = 0
@@ -176,7 +186,8 @@ class DerivativeBookHedgeEnv(Environment):
             transaction_cost += self.cost_scale \
                 * np.sum(self.get_market_state() * abs(self.book.hedge), axis=1)
 
-        reward = chg_book_value + chg_hedge_value - transaction_cost
+        pnl_change = chg_book_value + chg_hedge_value - transaction_cost
+        reward = self.risk_measure(pnl_change)
 
         time = np.tile(self.get_time(), (self.batch_size, 1))
         observation = tf.concat(

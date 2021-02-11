@@ -9,9 +9,9 @@ from metrics import CumulativeRewardMetric
 
 # ==============================================================================
 # === hyperparameters
-num_hedges = 1000
+num_hedges = 12
 batch_size = 1
-max_episodes = 25
+max_episodes = 1
 
 # ==============================================================================
 # === define book

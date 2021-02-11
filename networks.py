@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Dense, BatchNormalization
 from tensorflow.keras.activations import softplus, linear
 from tensorflow.keras.initializers import VarianceScaling
 
@@ -20,13 +20,18 @@ class SequentialNeuralNetwork(tf.keras.Model):
                    kernel_initializer=VarianceScaling())
              for _ in range(self.num_layers - 1)]
 
+        self.batch_norm = \
+            [BatchNormalization() for _ in range(self.num_layers - 1)]
+
         self.output_layer = Dense(self.output_dim, use_bias=True,
                                   activation=linear,
                                   kernel_initializer=VarianceScaling())
 
+    @tf.function
     def call(self, inputs, training=False):
         x = inputs
-        for layer in self.hidden_layers:
+        for layer, normalisation in zip(self.hidden_layers, self.batch_norm):
             x = layer(x)
+            x = normalisation(x, training)
         y = self.output_layer(x)
         return y

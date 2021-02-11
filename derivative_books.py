@@ -424,7 +424,11 @@ def random_black_scholes_put_call_book(
         (market_size, num_brownian_motions), 0, 0.5 / num_brownian_motions, FLOAT_DTYPE)
     put_call = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
     exposure = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
-    linker = tf.random.uniform((book_size, ), 0, market_size - 1, INT_DTYPE)
+
+    if market_size  > 1:
+        linker = tf.random.uniform((book_size, ), 0, market_size - 1, INT_DTYPE)
+    else:
+        linker = tf.convert_to_tensor((0, ), INT_DTYPE)
 
     book = BlackScholesPutCallBook(
         maturity, strike, drift, rate, diffusion, put_call, exposure, linker)
