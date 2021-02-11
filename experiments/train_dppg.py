@@ -14,9 +14,9 @@ from policies import BlackScholesDeltaPolicy
 # === hyperparameters
 batch_size = 100
 num_hedges = 12
-max_episodes = 100
+max_episodes = 1000
 
-book_batch_size = 1
+book_batch_size = 1000
 cost_scale = 0.
 
 actor_num_layers = 2
@@ -148,7 +148,7 @@ while episode < max_episodes:
         time_step = next_time_step
 
     print(f"episode {episode + 1}".ljust(15) \
-          + f"average reward: {cumulative_reward}")
+          + f"average reward: {cumulative_reward: .3f}")
     episode += 1
 
 # =============================================================================
@@ -174,7 +174,6 @@ while not time_step.terminated:
     time_step = next_time_step
 
     test_metric_benchmark.append(time_step.reward[:, tf.newaxis])
-
 
 agent_data = tf.concat(test_metric, 1)
 agent_mean = tf.reduce_mean(agent_data, 1)

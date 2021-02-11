@@ -130,13 +130,13 @@ class DerivativeBook(abc.ABC):
 
 
     @abc.abstractmethod
-    def _book_value(self, state: tf.Tensor, time: float) -> tf.Tensor:
-        """Compute value of book.
+    def _book_value(self, state: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
+        """Compute value of book at each point in time.
         Args:
             state: (num_samples, state_dimension, num_steps + 1)
-            time: float
+            time: (num_steps + 1, )
         Returns:
-            value: (num_samples, )
+            value: (num_samples, num_steps + 1)
         """
 
 
@@ -153,6 +153,7 @@ class DerivativeBook(abc.ABC):
             num_steps: int
             risk_neutral: bool
         Returns:
+            time: (num_steps + 1, )
             sample paths: (num_paths, state_dimension, num_steps + 1)
         """
 
@@ -161,52 +162,52 @@ class DerivativeBook(abc.ABC):
 def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
     """Returns price in Black's model.
     Args:
-        time_to_maturity: float
-        spot: (num_samples, book_size)
+        time_to_maturity: (num_steps + 1, )
+        spot: (num_samples, book_size, num_steps + 1)
         strike: (book_size, )
         rate: float
         volatility: (book_size, )
         theta: (book_size, )
     Returns:
-        price: (num_samples, book_size)
+        price: (num_samples, book_size, num_steps + 1)
     """
-    if time_to_maturity > 0:
-        deflator = math.exp(-rate * time_to_maturity)
-        forward = spot / deflator
-        m = tf.math.log(forward / strike)
-        v = volatility * math.sqrt(time_to_maturity)
-        m_over_v = m / v
-        v_over_2 = v / 2.
+    _strike = strike[tf.newaxis, :, tf.newaxis]
+    _theta = theta[tf.newaxis, :, tf.newaxis]
 
-        return deflator * theta \
-            * (forward * norm_cdf(theta * (m_over_v + v_over_2)) \
-               - strike * norm_cdf(theta * (m_over_v - v_over_2)))
-    else:
-        diff = theta * (spot - strike)
-        itm = tf.cast(diff > 0, FLOAT_DTYPE)
-        return diff * itm
+    deflator = tf.math.exp(-rate * time_to_maturity)
+    forward = spot / deflator
+    m = tf.math.log(forward / _strike)
+    v = volatility[tf.newaxis, :, tf.newaxis] * tf.math.sqrt(time_to_maturity)
+    m_over_v = m / v
+    v_over_2 = v / 2.
+
+    value = deflator * _theta \
+            * (forward * norm_cdf(_theta * (m_over_v + v_over_2)) \
+               - _strike * norm_cdf(_theta * (m_over_v - v_over_2)))
+
+    return value
+
+    # diff = theta * (spot - strike)
+    # itm = tf.cast(diff > 0, FLOAT_DTYPE)
+    # return diff * itm
 
 
 def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
     """Returns delta in Black's model.
     Args:
-        time_to_maturity: float
-        spot: (num_samples, book_size)
-        strike: (book_size, )
-        rate: float
-        volatility: (book_size, )
-        theta: (book_size, )
+        see black_price
     Returns:
-        delta: (num_samples, book_size)
+        delta: (num_samples, book_size, num_steps + 1)
     """
-    if time_to_maturity > 0:
-        forward = spot * math.exp(rate * time_to_maturity)
-        m = tf.math.log(forward / strike)
-        v = volatility * math.sqrt(time_to_maturity)
+    _strike = strike[tf.newaxis, :, tf.newaxis]
+    _theta = theta[tf.newaxis, :, tf.newaxis]
 
-        return theta * norm_cdf(theta * (m / v + v / 2.))
-    else:
-        return theta * tf.cast((spot - strike) > 0, FLOAT_DTYPE)
+    deflator = tf.math.exp(-rate * time_to_maturity)
+    forward = spot / deflator
+    m = tf.math.log(forward / _strike)
+    v = volatility[tf.newaxis, :, tf.newaxis] * tf.math.sqrt(time_to_maturity)
+
+    return _theta * norm_cdf(_theta * (m / v + v / 2.))
 
 
 def simulate_geometric_brownian_motion(maturity: float,
@@ -301,16 +302,16 @@ class BlackScholesPutCallBook(DerivativeBook):
 
     def _payoff(self, state: tf.Tensor) -> tf.Tensor:
         """Implementation of DerivativeBook._payoff."""
-        tradable = self._get_tradables(state)
-        diff = self.put_call * (tf.gather(tradable, self.linker, axis=1) - self.strike)
+        tradables = self._get_tradables(state)[..., -1]
+        diff = self.put_call * (tf.gather(tradables, self.linker, axis=1) - self.strike)
         itm = tf.cast(diff > 0, FLOAT_DTYPE)
         return tf.squeeze((diff * itm) @ self.exposure[:, tf.newaxis])
 
 
-    def _book_value(self, state: tf.Tensor, time: float) -> tf.Tensor:
+    def _book_value(self, state: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
         """Implementation of DerivativeBook.book_value."""
-        tradable = self._get_tradables(state)
-        values = self._marginal_book_value(tradable, time)
+        tradables = self._get_tradables(state)
+        values = self._marginal_book_value(tradables, time)
         return tf.reduce_sum(values, axis=1)
 
 
@@ -340,7 +341,7 @@ class BlackScholesPutCallBook(DerivativeBook):
             * tf.exp(self.rate * time_grid)
         riskless = tf.tile(single_path[tf.newaxis, :], (num_paths, 1))
 
-        return tf.concat((risk, riskless[:, tf.newaxis, :]), axis=1)
+        return time_grid, tf.concat((risk, riskless[:, tf.newaxis, :]), axis=1)
 
 
     # === other
@@ -349,17 +350,19 @@ class BlackScholesPutCallBook(DerivativeBook):
         Args:
             state: see DerivativeBook._force_state_shape
         Returns:
-            tradable: (num_samples, market_size)
+            tradable: (num_samples, market_size, num_steps + 1)
         """
-        return state[:, :self.market_size, -1]
+        return state[:, :self.market_size, :]
 
 
-    def _marginal_book_value(self, tradables: tf.Tensor, time: float) -> tf.Tensor:
+    def _marginal_book_value(
+            self, tradables: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
         """Computes value of each individual option.
             Args:
                 tradables: see _get_tradables.
+                time: (num_steps + 1, )
             Returns:
-                prices: (num_samples, book_size)
+                prices: (num_samples, book_size, num_steps + 1)
 
         """
         value = black_price(
@@ -371,7 +374,7 @@ class BlackScholesPutCallBook(DerivativeBook):
             self.put_call
             )
 
-        return self.exposure * value
+        return self.exposure[tf.newaxis, :, tf.newaxis] * value
 
 
     def book_delta(self, state: tf.Tensor, time: float) -> tf.Tensor:
@@ -379,11 +382,11 @@ class BlackScholesPutCallBook(DerivativeBook):
         Args:
             state_like
         Returns:
-            gradient: (num_samples, market_size)
+            gradient: (num_samples, market_size, num_steps + 1)
         """
         state = super()._force_state_shape(state)
-        tradable = self._get_tradables(state)
-        gradient = self._marginal_book_delta(tradable, time)
+        tradables = self._get_tradables(state)
+        gradient = self._marginal_book_delta(tradables, time)
 
         v = []
         for k in tf.range(self.market_size):
@@ -400,7 +403,7 @@ class BlackScholesPutCallBook(DerivativeBook):
             Args:
                 see _get_tradables
             Returns:
-                gradient: (num_paths, book_size)
+                gradient: (num_samples, book_size, num_steps + 1)
         """
         gradient = black_delta(
             self.maturity - time,
@@ -411,11 +414,14 @@ class BlackScholesPutCallBook(DerivativeBook):
             self.put_call
             )
 
-        return gradient * self.exposure
+        return self.exposure[tf.newaxis, :, tf.newaxis] * gradient
 
 
 def random_black_scholes_put_call_book(
-        book_size: int, market_size: int, num_brownian_motions: int):
+        book_size: int, market_size: int, num_brownian_motions: int,
+        seed: int):
+    tf.random.set_seed(seed)
+
     maturity = tfp.distributions.Exponential(1).sample(1)
     strike = tfp.distributions.Poisson(99).sample(book_size) + 1 # ensure positive
     drift = tf.random.uniform((market_size, ), 0.05, 0.1)
