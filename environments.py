@@ -51,9 +51,11 @@ class Environment(abc.ABC):
     def _step(self, action_step: ActionStep) -> TimeStep:
         """Performs one step in the environment.
         Args:
-            action: ...
+            action_step.action: (batch_size, action_dimension)
         Returns:
-            time_step: the subsequent time step.
+            time_step.observation: (batch_size, observation_dimension)
+            time_step.reward: (batch_size, )
+            time_step.terminated: bool
         """
 
 
@@ -79,9 +81,7 @@ class DerivativeBookHedgeEnv(Environment):
 
         self.time_step_size = self.book.maturity / self.num_hedges
 
-        self.max_paths_in_memory = 10000
-        if self.batch_size > self.max_paths_in_memory:
-            self.max_paths_in_memory = self.batch_size
+        self.max_paths_in_memory = max(self.batch_size, 100000)
         self.size_batch_of_paths = math.floor(
             self.max_paths_in_memory / self.batch_size)
         self.batch_of_paths = deque()
@@ -98,11 +98,11 @@ class DerivativeBookHedgeEnv(Environment):
 
     @property
     def observation_dimension(self) -> int:
-        return 1 + self.book.state_dimension + self.book.market_size
+        return 1 + self.book.market_size # TODO change to: return 1 + self.book.state_dimension + self.book.market_size
 
 
     def get_time(self):
-        return self.time_step_size * self.time_idx
+        return self.time[self.time_idx]
 
 
     def get_full_state(self):
@@ -130,21 +130,19 @@ class DerivativeBookHedgeEnv(Environment):
         if not self.batch_of_paths:
             self.fill_batch_of_paths()
         self.paths = self.batch_of_paths.pop()
-
-        self.book_value = self.book.book_value(
-            self.get_full_state(), self.get_time())
+        self.book_value_trajectory = self.batch_of_book_value_trajectories.pop()
+        self.book_value = self.book_value_trajectory[:, self.time_idx]
 
         empty_hedge = np.zeros((self.batch_size, self.book.market_size))
         time = np.tile(self.get_time(), (self.batch_size, 1))
-        observation = np.hstack([time, self.get_full_state(), empty_hedge])
+        observation = np.hstack([time, self.get_full_state()[..., :-1]]) # TODO change to: np.hstack([time, self.get_full_state(), empty_hedge])
 
         return ts.restart(observation)
 
 
     def step_book_value(self):
         prior = self.book_value
-        self.book_value = self.book.book_value(
-            self.get_full_state(), self.get_time())
+        self.book_value = self.book_value_trajectory[:, self.time_idx]
 
         return self.book_value - prior
 
@@ -166,6 +164,7 @@ class DerivativeBookHedgeEnv(Environment):
                 self.get_full_state(), action_step.action, -self.book_value)
             self.hedge_value = self.book.hedge_value(self.get_full_state())
         else:
+            # change_in_hedge = action_step.action - self.book.hedge[:, :-1] TODO use this instead. Also change in above.
             chg_hedge = self.book.rebalance_hedge(
                 self.get_full_state(), action_step.action)
 
@@ -190,8 +189,7 @@ class DerivativeBookHedgeEnv(Environment):
         reward = self.risk_measure(pnl_change)
 
         time = np.tile(self.get_time(), (self.batch_size, 1))
-        observation = tf.concat(
-            [time, self.get_full_state(), self.book.hedge[:, :-1]], 1)
+        observation = tf.concat([time, self.get_market_state()[..., :-1]], 1) # TODO change to: tf.concat([time, self.get_full_state(), self.book.hedge[:, :-1]], 1)
 
         if self.time_idx == self.num_hedges:
             self._episode_ended = True
@@ -202,7 +200,12 @@ class DerivativeBookHedgeEnv(Environment):
 
     def fill_batch_of_paths(self):
         num_paths = self.size_batch_of_paths * self.batch_size
-        paths = self.book.sample_paths(
+        time, paths = self.book.sample_paths(
             self.init_state, num_paths, self.num_hedges, False)
 
+        book_value = self.book.book_value(paths, time)
+
+        self.time = time
         self.batch_of_paths = deque(np.split(paths, self.size_batch_of_paths))
+        self.batch_of_book_value_trajectories = deque(
+            np.split(book_value, self.size_batch_of_paths))

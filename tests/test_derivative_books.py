@@ -13,16 +13,51 @@ from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 # ==============================================================================
 # === Blacks formulas
 class test_black(TestCase):
+    def get_formatted_params(self, time, spot, strike, rate, volatility, theta):
+        params = [time,
+                  np.array([spot], NP_FLOAT_DTYPE),
+                  np.array([strike], NP_FLOAT_DTYPE),
+                  rate,
+                  np.array([volatility], NP_FLOAT_DTYPE),
+                  np.array([theta], NP_FLOAT_DTYPE)]
+
+        return params
+
+
     def test_black_univariate(self):
-        params = [0.25,
-                  np.array([110.]),
-                  np.array([90.]),
-                  0.05,
-                  np.array([0.2]),
-                  np.array([1])]
+        time, spot, strike, rate, volatility, theta = 0.25, 110., 90., 0.05, 0.2, 1
+        params = self.get_formatted_params(time, spot, strike, rate, volatility, theta)
 
         price_expected = np.array([[[21.1765104079965]]])
         delta_expected = np.array([[[0.985434416336097]]])
+
+        price_result = black_price(*params)
+        delta_result = black_delta(*params)
+
+        assert_array_almost_equal(price_result, price_expected)
+        assert_array_almost_equal(delta_result, delta_expected)
+
+
+    def test_black_call_at_maturity(self):
+        time, spot, strike, rate, volatility, theta = 0.0, 110., 90., 0.05, 0.2, 1
+        params = self.get_formatted_params(time, spot, strike, rate, volatility, theta)
+
+        price_expected = np.array([[[max(spot - strike, 0)]]], NP_FLOAT_DTYPE)
+        delta_expected = np.array([[[(spot - strike) > 0]]], NP_FLOAT_DTYPE)
+
+        price_result = black_price(*params)
+        delta_result = black_delta(*params)
+
+        assert_array_almost_equal(price_result, price_expected)
+        assert_array_almost_equal(delta_result, delta_expected)
+
+
+    def test_black_put_at_maturity(self):
+        time, spot, strike, rate, volatility, theta = 0.0, 110., 90., 0.05, 0.2, -1
+        params = self.get_formatted_params(time, spot, strike, rate, volatility, theta)
+
+        price_expected = np.array([[[max(strike - spot, 0)]]], NP_FLOAT_DTYPE)
+        delta_expected = np.array([[[(strike - spot) > 0]]], NP_FLOAT_DTYPE)
 
         price_result = black_price(*params)
         delta_result = black_delta(*params)

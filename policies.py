@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import abc
+import tensorflow as tf
 
 import timestep as ts
 from timestep import ActionStep
@@ -22,7 +23,10 @@ class BlackScholesDeltaPolicy(Policy):
 
     def _action(self, time_step):
         market_size = self.book.market_size
-        time = time_step.observation[0, 0]
-        state = time_step.observation[:, 1:(market_size + 1)]
-        action = -self.book.book_delta(state, time)
+        time = time_step.observation[0, 0][tf.newaxis]
+        state = time_step.observation[:, 1:(market_size + 1)][..., tf.newaxis]
+
+        # sign change as agent is short the book
+        action = -self.book.book_delta(state, time)[..., -1]
+
         return ActionStep(action)

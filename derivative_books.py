@@ -39,11 +39,11 @@ class DerivativeBook(abc.ABC):
             hedge: (num_samples, market_size)
             value: (num_samples, )
         Returns:
-            changes in hedge portfolio (num_samples, market_size + 1, )
+            changes in hedge portfolio (num_samples, market_size + 1)
         """
         state = self._force_state_shape(state)
         self.hedge = np.zeros_like(state[:, :(self.market_size + 1), -1])
-        self.hedge[:, -1] = value / state[:, -1, -1,]
+        self.hedge[:, -1] = value / state[:, -1, -1]
         self.hedge = tf.convert_to_tensor(self.hedge, FLOAT_DTYPE)
         self.rebalance_hedge(state, hedge)
 
@@ -60,6 +60,7 @@ class DerivativeBook(abc.ABC):
         """
         state = self._force_state_shape(state)
         values = self.hedge * state[:, :(self.market_size + 1), -1]
+
         return tf.reduce_sum(values, axis=1)
 
 
@@ -380,7 +381,7 @@ class BlackScholesPutCallBook(DerivativeBook):
     def book_delta(self, state: tf.Tensor, time: float) -> tf.Tensor:
         """Computes gradient of book wrt. underlying tradables
         Args:
-            state_like
+            see DerivativeBook._book_value
         Returns:
             gradient: (num_samples, market_size, num_steps + 1)
         """
@@ -397,11 +398,11 @@ class BlackScholesPutCallBook(DerivativeBook):
         return tf.concat(v, axis=1)
 
 
-    def _marginal_book_delta(self,
-                             tradables: tf.Tensor, time:float) -> tf.Tensor:
+    def _marginal_book_delta(
+            self, tradables: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
         """Computes delta of each individual option.
             Args:
-                see _get_tradables
+                see _marginal_book_value
             Returns:
                 gradient: (num_samples, book_size, num_steps + 1)
         """

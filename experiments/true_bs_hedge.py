@@ -1,32 +1,39 @@
 # -*- coding: utf-8 -*-
 import numpy as np
+import tensorflow as tf
 import matplotlib.pyplot as plt
+import math
 
 from derivative_books import random_black_scholes_put_call_book
 from environments import DerivativeBookHedgeEnv
 from policies import BlackScholesDeltaPolicy
-from metrics import CumulativeRewardMetric
+from metrics import TrainMetric
 
 # ==============================================================================
 # === hyperparameters
-num_hedges = 12
-batch_size = 1
-max_episodes = 1
+batch_size = 250
+max_episodes = 100
+num_hedges_a_year = 52
+
 
 # ==============================================================================
 # === define book
-init_state, book = random_black_scholes_put_call_book(20, 7, 7)
+# seed 23: long call
+# seed 27: short call
+init_state, book = random_black_scholes_put_call_book(1, 1, 1, 420)
+num_hedges = math.ceil(num_hedges_a_year * book.maturity)
 
 # ==============================================================================
 # === define environment
 env = DerivativeBookHedgeEnv(book, init_state, num_hedges, 0., batch_size)
 policy = BlackScholesDeltaPolicy(book)
-metrics = [CumulativeRewardMetric()]
+metrics = [TrainMetric(max_episodes)]
 
-num_episode = 0
+episode = 0
 
-while num_episode < max_episodes:
+while episode < max_episodes:
     time_step = env.reset()
+    cumulative_reward = 0
 
     while not time_step.terminated:
         action_step = policy.action(time_step)
@@ -34,24 +41,20 @@ while num_episode < max_episodes:
 
         for metric in metrics:
             metric.load(time_step, action_step)
+        cumulative_reward += tf.reduce_mean(time_step.reward).numpy()
 
         time_step = next_time_step
-    num_episode += 1
 
-plt.figure()
-time = np.linspace(0., book.maturity, len(metric.result()))
-plt.plot(time, metric.result())
-plt.show()
+    print(f"episode {episode + 1}".ljust(15) \
+          + f"average reward: {cumulative_reward: .3f}")
+    episode += 1
 
-# === plot
-# xmin, xmax = 80., 110.
-# x = tf.linspace(xmin, xmax, 1000)
-# y = (x - strike) * tf.cast(x > strike, FLOAT_DTYPE)
-#
-# inplot = (xmin < asset) & (asset < xmax)
-#
+# mean, std, left_ci, right_ci = metric.result()
+
+
 # plt.figure()
-# plt.plot(x, y, color="black")
-# plt.scatter(tf.boolean_mask(asset, inplot), tf.boolean_mask(V, inplot),
-#             5, alpha=0.5, color="cyan")
+# time = np.linspace(0., book.maturity, num_hedges)
+# plt.plot(time, mean)
+# plt.plot(time, left_ci, "--", color="red")
+# plt.plot(time, right_ci, "--", color="red")
 # plt.show()
