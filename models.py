@@ -47,47 +47,32 @@ class Strategy(tf.keras.layers.Layer):
 
 # ==============================================================================
 # === Models
-class SimpleHedge(tf.keras.models.Model):
-    def __init__(
-            self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
-        super(SimpleHedge, self).__init__(**kwargs)
-
-        self.num_steps = int(num_steps)
-        self.instrument_dim = int(instrument_dim)
-        self.num_layers = int(num_layers)
-        self.num_units = int(num_units)
-
-        self.strategy_layers = []
-        for num in range(self.num_steps):
-            self.strategy_layers.append(Strategy(
-                self.instrument_dim, self.num_layers, self.num_units))
+class Hedge(tf.keras.models.Model, abc.ABC):
+    def __init__(self, **kwargs):
+        super(Hedge, self).__init__(**kwargs)
 
 
-    def compile(self, loss_fn, **kwargs):
-        super(SimpleHedge, self).compile(**kwargs)
-        self.loss_fn = loss_fn
+    @property
+    @abc.abstractmethod
+    def instrument_dim(self) -> int:
+        """Returns number of hedge instruments."""
 
 
-    @tf.function
-    def call(self, inputs, training=False):
-        """Implementation of call for SimpleHedge.
-        Args:
-            inputs: [information, trade, payoff]
-                information: (batch_size, ?, num_steps)
-                trade: (batch_size, instrument_dim, num_steps + 1)
-                payoff: (batch_size, ) payoff at time num_steps + 1
-        Returns:
-            value: (batch_size, )
-        """
-        information, trade, payoff = inputs
-        wealth = -payoff
+    @property
+    @abc.abstractmethod
+    def num_steps(self) -> int:
+        """Returns number of steps in hedge."""
 
-        for step, strategy in enumerate(self.strategy_layers):
-            holdings = strategy(information[..., step], training)
-            increment = trade[:, :, step + 1] - trade[:, :, step]
-            wealth += tf.reduce_sum(tf.multiply(holdings, increment), 1)
 
-        return wealth
+    @property
+    @abc.abstractmethod
+    def strategy_layers(self) -> list:
+        """Returns the strategy layers."""
+
+
+    def compile(self, risk_measure, **kwargs):
+        super(Hedge, self).compile(**kwargs)
+        self.risk_measure = risk_measure
 
 
     @tf.function
@@ -95,7 +80,7 @@ class SimpleHedge(tf.keras.models.Model):
         (x, ) = data
         with tf.GradientTape() as tape:
             y = self(x, training=True)
-            loss = self.loss_fn(y)
+            loss = self.risk_measure(y)
 
         trainable_vars = self.trainable_variables
         gradients = tape.gradient(loss, trainable_vars)
@@ -104,6 +89,73 @@ class SimpleHedge(tf.keras.models.Model):
 
         return {"loss": loss}
 
+
+    @abc.abstractmethod
+    def observation(self, step, information, holdings) -> tf.Tensor:
+        """Returns the input to the strategy layers.
+        Args:
+            see Hedge.call
+        Returns:
+            input: (batch_size, None)
+        """
+
+
+    @tf.function
+    def call(self, inputs, training=False):
+        """Implementation of call for tf.keras.models.Model.
+        Args:
+            inputs: [information, trade, payoff]
+                information: (batch_size, None, num_steps)
+                trade: (batch_size, instrument_dim + 1, num_steps + 1)
+                payoff: (batch_size, ) payoff at time num_steps + 1
+        Returns:
+            value: (batch_size, )
+        """
+        information, trade, payoff = inputs
+        wealth = -payoff
+        holdings = tf.zeros_like(trade[:, :self.instrument_dim, 0], FLOAT_DTYPE)
+
+        for step, strategy in enumerate(self.strategy_layers):
+            observation = self.observation(step, information, holdings)
+            holdings = strategy(observation, training)
+            increment = trade[:, :, step + 1] - trade[:, :, step]
+            wealth += tf.reduce_sum(tf.multiply(holdings, increment), 1)
+
+        return wealth
+
+
+class SimpleHedge(Hedge):
+    def __init__(
+            self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
+        super(SimpleHedge, self).__init__(**kwargs)
+
+        self._num_steps = int(num_steps)
+        self._instrument_dim = int(instrument_dim)
+
+        self._strategy_layers = []
+        for _ in range(self.num_steps):
+            self._strategy_layers.append(Strategy(
+                self.instrument_dim, num_layers, num_units))
+
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
+
+
+    @property
+    def instrument_dim(self) -> int:
+        return self._instrument_dim
+
+
+    @property
+    def num_steps(self) -> int:
+        return self._num_steps
+
+
+    @tf.function
+    def observation(self, step, information, holdings):
+        """Implementation of observation for SimpleHedge."""
+        return information[..., step]
 
 # =============================================================================
 # ===

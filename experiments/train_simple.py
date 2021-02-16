@@ -13,7 +13,7 @@ def split_sample(sample):
 
     return [information, trade, payoff]
 
-num_paths, num_steps = int(10**6), 30
+num_paths, num_steps = int(10**5), 30
 init_state, book = random_simple_put_call_book(num_steps / 250)
 time, train_samples = book.sample_paths(init_state, num_paths, num_steps, False)
 
@@ -27,7 +27,7 @@ model.compile(risk_measure, optimizer=optimizer)
 batch_size, epochs = 256, 50
 history = model.fit(train, batch_size=batch_size, epochs=epochs, verbose=2)
 
-price = model.loss_fn(model(train, False))
+price = model.risk_measure(model(train, False))
 hedge_payoff = price + model(train, False)
 
 plt.figure()
