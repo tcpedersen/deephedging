@@ -21,75 +21,20 @@ class DerivativeBook(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def market_size(self) -> int:
+    def instrument_dim(self) -> int:
         """Number of underlying risky tradable processes."""
 
 
     @property
     @abc.abstractmethod
-    def non_market_size(self) -> int:
+    def non_instrument_dim(self) -> int:
         """Number of underlying non-tradable processes."""
-
-
-    def setup_hedge(self,
-                    state: tf.Tensor,
-                    hedge: tf.Tensor,
-                    value: float) -> tf.Tensor:
-        """Initialisation of DerivativeBook
-        Args:
-            state: state_like
-            hedge: (num_samples, market_size)
-            value: (num_samples, )
-        Returns:
-            changes in hedge portfolio (num_samples, market_size + 1)
-        """
-        state = self._force_state_shape(state)
-        self.hedge = np.zeros_like(state[:, :(self.market_size + 1), -1])
-        self.hedge[:, -1] = value / state[:, -1, -1]
-        self.hedge = tf.convert_to_tensor(self.hedge, FLOAT_DTYPE)
-        self.rebalance_hedge(state, hedge)
-
-        return self.hedge
-
-
-    def hedge_value(self, state: tf.Tensor) -> tf.Tensor:
-        """Compute value of hedge portfolio. Assumes DerivativeBook.setup_hedge
-        has been run at least once beforehand.
-        Args:
-            state: state_like
-        Returns:
-            value: (num_samples, )
-        """
-        state = self._force_state_shape(state)
-        values = self.hedge * state[:, :(self.market_size + 1), -1]
-
-        return tf.reduce_sum(values, axis=1)
-
-
-    def rebalance_hedge(
-            self, state: tf.Tensor, hedge: tf.Tensor) -> tf.Tensor:
-        """Rebalance hedge portfolio. Assumes DerivativeBook.setup_hedge has
-        been run at least once beforehand.
-        Args:
-            state: state_like
-            hedge: (num_samples, market_size)
-        Returns:
-            changes in hedge portfolio (num_samples, market_size + 1)
-        """
-        state = self._force_state_shape(state)
-        risk_change = hedge - self.hedge[:, :-1]
-        risk_value_change = tf.reduce_sum(risk_change * state[:, :self.market_size, -1], axis=1)
-        riskless_change = -risk_value_change / state[:, self.market_size, -1]
-        change = tf.concat([risk_change, riskless_change[:, tf.newaxis]], axis=1)
-        self.hedge += change
-
-        return change
 
 
     @property
     def state_dimension(self) -> int:
         """Returns the dimensionalility of the state."""
-        return self.market_size + 1 + self.non_market_size
+        return self.instrument_dim + 1 + self.non_instrument_dim
 
 
     def _force_state_shape(self, state: tf.Tensor) -> tf.Tensor:
@@ -223,14 +168,14 @@ def simulate_geometric_brownian_motion(maturity: float,
     """Simulate a multivariate GBM.
     Args:
         maturity: float
-        init_state: (market_size, )
-        drift : (market_size, )
-        volatility: (market_size, )
-        correlation : (market_size, market_size)
+        init_state: (instrument_dim, )
+        drift : (instrument_dim, )
+        volatility: (instrument_dim, )
+        correlation : (instrument_dim, instrument_dim)
         num_paths : int
         num_steps : int
     Returns:
-        Sample paths: (num_paths, market_size, num_steps + 1)
+        Sample paths: (num_paths, instrument_dim, num_steps + 1)
     """
     zero_mean = np.zeros_like(drift)
     size = (num_paths, num_steps)
@@ -264,12 +209,12 @@ class BlackScholesPutCallBook(DerivativeBook):
         Args:
             maturity: float
             strike: (book_size, )
-            drift: (market_size, )
+            drift: (instrument_dim, )
             rate: float
-            diffusion: (market_size, num_brownian_motions)
+            diffusion: (instrument_dim, num_brownian_motions)
             put_call: 1 or -1 for call / put (book_size, )
             exposure: n or -n for long / short (book_size, )
-            linker: {0, ..., market_size-1} indicates what asset the
+            linker: {0, ..., instrument_dim-1} indicates what asset the
                 strike is associated with (book_size, )
         """
         self.maturity = float(maturity)
@@ -292,27 +237,27 @@ class BlackScholesPutCallBook(DerivativeBook):
 
 
     @property
-    def market_size(self):
+    def instrument_dim(self):
         return len(self.drift)
 
 
     @property
-    def non_market_size(self):
+    def non_instrument_dim(self):
         return 0
 
 
     def _payoff(self, state: tf.Tensor) -> tf.Tensor:
         """Implementation of DerivativeBook._payoff."""
-        tradables = self._get_tradables(state)[..., -1]
-        diff = self.put_call * (tf.gather(tradables, self.linker, axis=1) - self.strike)
+        instruments = self._get_instruments(state)[..., -1]
+        diff = self.put_call * (tf.gather(instruments, self.linker, axis=1) - self.strike)
         itm = tf.cast(diff > 0, FLOAT_DTYPE)
         return tf.squeeze((diff * itm) @ self.exposure[:, tf.newaxis])
 
 
     def _book_value(self, state: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
         """Implementation of DerivativeBook.book_value."""
-        tradables = self._get_tradables(state)
-        values = self._marginal_book_value(tradables, time)
+        instruments = self._get_instruments(state)
+        values = self._marginal_book_value(instruments, time)
         return tf.reduce_sum(values, axis=1)
 
 
@@ -326,7 +271,7 @@ class BlackScholesPutCallBook(DerivativeBook):
             else self.drift
 
         # simulate risky paths
-        tradable = init_state[:self.market_size]
+        tradable = init_state[:self.instrument_dim]
         risk = simulate_geometric_brownian_motion(
             self.maturity,
             tradable,
@@ -338,7 +283,7 @@ class BlackScholesPutCallBook(DerivativeBook):
 
         # simulate riskless path
         time_grid = tf.linspace(0., self.maturity, num_steps + 1)
-        single_path = init_state[self.market_size] \
+        single_path = init_state[self.instrument_dim] \
             * tf.exp(self.rate * time_grid)
         riskless = tf.tile(single_path[tf.newaxis, :], (num_paths, 1))
 
@@ -346,21 +291,21 @@ class BlackScholesPutCallBook(DerivativeBook):
 
 
     # === other
-    def _get_tradables(self, state: tf.Tensor) -> tf.Tensor:
+    def _get_instruments(self, state: tf.Tensor) -> tf.Tensor:
         """Extract tradable assets from state.
         Args:
             state: see DerivativeBook._force_state_shape
         Returns:
-            tradable: (num_samples, market_size, num_steps + 1)
+            tradable: (num_samples, instrument_dim, num_steps + 1)
         """
-        return state[:, :self.market_size, :]
+        return state[:, :self.instrument_dim, :]
 
 
     def _marginal_book_value(
-            self, tradables: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
+            self, instruments: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
         """Computes value of each individual option.
             Args:
-                tradables: see _get_tradables.
+                instruments: see _get_instruments.
                 time: (num_steps + 1, )
             Returns:
                 prices: (num_samples, book_size, num_steps + 1)
@@ -368,7 +313,7 @@ class BlackScholesPutCallBook(DerivativeBook):
         """
         value = black_price(
             self.maturity - time,
-            tf.gather(tradables, self.linker, axis=1),
+            tf.gather(instruments, self.linker, axis=1),
             self.strike,
             self.rate,
             tf.gather(self.volatility, self.linker),
@@ -379,18 +324,18 @@ class BlackScholesPutCallBook(DerivativeBook):
 
 
     def book_delta(self, state: tf.Tensor, time: float) -> tf.Tensor:
-        """Computes gradient of book wrt. underlying tradables
+        """Computes gradient of book wrt. underlying instruments
         Args:
             see DerivativeBook._book_value
         Returns:
-            gradient: (num_samples, market_size, num_steps + 1)
+            gradient: (num_samples, instrument_dim, num_steps + 1)
         """
         state = super()._force_state_shape(state)
-        tradables = self._get_tradables(state)
-        gradient = self._marginal_book_delta(tradables, time)
+        instruments = self._get_instruments(state)
+        gradient = self._marginal_book_delta(instruments, time)
 
         v = []
-        for k in tf.range(self.market_size):
+        for k in tf.range(self.instrument_dim):
             mask = tf.where(self.linker == k)[:, 0]
             v.append(tf.reduce_sum(
                 tf.gather(gradient, mask, axis=1), axis=1, keepdims=True))
@@ -399,7 +344,7 @@ class BlackScholesPutCallBook(DerivativeBook):
 
 
     def _marginal_book_delta(
-            self, tradables: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
+            self, instruments: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
         """Computes delta of each individual option.
             Args:
                 see _marginal_book_value
@@ -408,7 +353,7 @@ class BlackScholesPutCallBook(DerivativeBook):
         """
         gradient = black_delta(
             self.maturity - time,
-            tf.gather(tradables, self.linker, axis=1),
+            tf.gather(instruments, self.linker, axis=1),
             self.strike,
             self.rate,
             tf.gather(self.volatility, self.linker),
@@ -419,21 +364,21 @@ class BlackScholesPutCallBook(DerivativeBook):
 
 
 def random_black_scholes_put_call_book(
-        book_size: int, market_size: int, num_brownian_motions: int,
+        book_size: int, instrument_dim: int, num_brownian_motions: int,
         seed: int):
     tf.random.set_seed(seed)
 
     maturity = uniform((1, ), 0.3, 1.5, FLOAT_DTYPE)
     strike = uniform((book_size, ), 0.75, 1.25, FLOAT_DTYPE)
-    drift = tf.random.uniform((market_size, ), 0.05, 0.1)
+    drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1)
     rate = tf.random.uniform((1, ), 0.0, 0.05)
     diffusion = tf.random.uniform(
-        (market_size, num_brownian_motions), 0, 0.25 / num_brownian_motions, FLOAT_DTYPE)
+        (instrument_dim, num_brownian_motions), 0, 0.25 / num_brownian_motions, FLOAT_DTYPE)
     put_call = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
     exposure = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
 
-    if market_size  > 1:
-        linker = tf.random.uniform((book_size, ), 0, market_size - 1, INT_DTYPE)
+    if instrument_dim  > 1:
+        linker = tf.random.uniform((book_size, ), 0, instrument_dim - 1, INT_DTYPE)
     else:
         linker = tf.convert_to_tensor((0, ), INT_DTYPE)
 
@@ -442,9 +387,9 @@ def random_black_scholes_put_call_book(
 
     if tf.reduce_any(book.volatility > 0.5):
         _, book = random_black_scholes_put_call_book(
-            book_size, market_size, num_brownian_motions)
+            book_size, instrument_dim, num_brownian_motions)
 
-    init_risky = uniform((market_size, ), 0.75, 1.25, FLOAT_DTYPE)
+    init_risky = uniform((instrument_dim, ), 0.75, 1.25, FLOAT_DTYPE)
     init_riskless = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
     init_state = tf.concat([init_risky, init_riskless], axis=0)
 

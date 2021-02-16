@@ -3,26 +3,24 @@ import tensorflow as tf
 import abc
 
 from tensorflow.keras.layers import Dense, BatchNormalization
-from tensorflow.keras.activations import relu, sigmoid
+from tensorflow.keras.activations import relu
 
-from constants import INT_DTYPE, FLOAT_DTYPE
+from constants import FLOAT_DTYPE
 
 # ==============================================================================
-# === Layers
-class Strategy(tf.keras.layers.Layer):
+# === Strategy layers
+class DenseStrategy(tf.keras.layers.Layer):
     def __init__(self, instrument_dim, num_layers, num_units, **kwargs):
-        super(Strategy, self).__init__(**kwargs)
+        super(DenseStrategy, self).__init__(**kwargs)
 
         self.instrument_dim = int(instrument_dim)
-        self.num_layers = int(num_layers)
-        self.num_units = int(num_units)
 
         self.dense_layers = []
         self.batch_layers = []
 
-        for _ in range(self.num_layers - 1):
+        for _ in range(num_layers - 1):
             self.dense_layers.append(
-                Dense(units=self.num_units, use_bias=False)) # TODO add bias
+                Dense(units=num_units, use_bias=False))
             self.batch_layers.append(BatchNormalization())
 
         self.output_layer = Dense(units=self.instrument_dim)
@@ -31,7 +29,7 @@ class Strategy(tf.keras.layers.Layer):
     def call(self, inputs, training=False):
         """Implementation of call for Strategy.
         Args:
-            inputs: (batch_size, instrument_dim)
+            inputs: (batch_size, None)
             training: bool
         Returns:
             output: (batch_size, instrument_dim)
@@ -44,6 +42,22 @@ class Strategy(tf.keras.layers.Layer):
 
         return output
 
+
+# ==============================================================================
+# === Cost Layers
+class ProportionalCost(tf.keras.layers.Layer):
+    @tf.function
+    def call(self, inputs):
+        """Implementation of call for ProportionalCost.
+        Args:
+            inputs: [delta_holdings, instruments]
+                delta_holdings: (batch_size, instrument_dim)
+                instruments: (batch_size, instrument_dim)
+        Returns:
+            output: (batch_size, )
+        """
+        delta_holdings, instruments = inputs
+        return tf.reduce_sum(tf.multiply(delta_holdings * instruments), 1)
 
 # ==============================================================================
 # === Models
@@ -70,6 +84,12 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         """Returns the strategy layers."""
 
 
+    @property
+    def cost_layers(self) -> list:
+        """Returns the cost layers or None if no transaction costs."""
+        return None
+
+
     def compile(self, risk_measure, **kwargs):
         super(Hedge, self).compile(**kwargs)
         self.risk_measure = risk_measure
@@ -91,35 +111,55 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 
 
     @abc.abstractmethod
-    def observation(self, step, information, holdings) -> tf.Tensor:
+    def observation(self, step, information, hedge) -> tf.Tensor:
         """Returns the input to the strategy layers.
         Args:
             see Hedge.call
         Returns:
-            input: (batch_size, None)
+            input: (batch_size, )
         """
+
+
+    def costs(self, step, new_hedge, old_hedge, instruments):
+        """Returns the costs associated with a trade.
+        Args:
+            step: int
+            new_hedge / old_hedge: (batch_size, instrument_dim)
+            instruments: (batch_size, instrument_dim)
+        Returns:
+            (batch_size, )
+        """
+        if self.cost_layers is not None:
+            delta = new_hedge - old_hedge
+            return self.cost_layers[step]([delta, instruments[..., step]])
+
+        return tf.zeros_like(new_hedge[..., 0], FLOAT_DTYPE)
 
 
     @tf.function
     def call(self, inputs, training=False):
         """Implementation of call for tf.keras.models.Model.
         Args:
-            inputs: [information, trade, payoff]
+            inputs: [information, instruments, payoff]
                 information: (batch_size, None, num_steps)
-                trade: (batch_size, instrument_dim + 1, num_steps + 1)
+                instruments: (batch_size, instrument_dim, num_steps + 1)
                 payoff: (batch_size, ) payoff at time num_steps + 1
         Returns:
             value: (batch_size, )
         """
-        information, trade, payoff = inputs
+        information, instruments, payoff = inputs
         wealth = -payoff
-        holdings = tf.zeros_like(trade[:, :self.instrument_dim, 0], FLOAT_DTYPE)
+        hedge = tf.zeros_like(instruments[..., 0], FLOAT_DTYPE)
 
         for step, strategy in enumerate(self.strategy_layers):
-            observation = self.observation(step, information, holdings)
-            holdings = strategy(observation, training)
-            increment = trade[:, :, step + 1] - trade[:, :, step]
-            wealth += tf.reduce_sum(tf.multiply(holdings, increment), 1)
+            observation = self.observation(step, information, hedge)
+            old_hedge = hedge
+            hedge = strategy(observation, training)
+            costs = self.costs(step, hedge, old_hedge, instruments)
+
+            increment = instruments[:, :, step + 1] - instruments[:, :, step]
+            wealth += tf.reduce_sum(tf.multiply(hedge, increment), 1)
+            wealth -= costs
 
         return wealth
 
@@ -134,7 +174,7 @@ class SimpleHedge(Hedge):
 
         self._strategy_layers = []
         for _ in range(self.num_steps):
-            self._strategy_layers.append(Strategy(
+            self._strategy_layers.append(DenseStrategy(
                 self.instrument_dim, num_layers, num_units))
 
     @property
@@ -153,7 +193,7 @@ class SimpleHedge(Hedge):
 
 
     @tf.function
-    def observation(self, step, information, holdings):
+    def observation(self, step, information, hedge):
         """Implementation of observation for SimpleHedge."""
         return information[..., step]
 
@@ -161,12 +201,12 @@ class SimpleHedge(Hedge):
 # ===
 class RiskMeasure(abc.ABC):
     @abc.abstractmethod
-    def __call__(self, x: tf.Tensor):
+    def __call__(self, x: tf.Tensor) -> tf.Tensor:
         """Returns the associated risk of x.
         Args:
             x: (batch_size, )
         Returns:
-            :math: \rho(x) (1, )
+            (1, )
         """
 
 
@@ -177,4 +217,9 @@ class EntropicRisk(RiskMeasure):
     @tf.function
     def __call__(self, x):
         exp = tf.exp(-self.aversion * x)
-        return tf.math.log(tf.reduce_mean(exp, -1)) / self.aversion
+        return tf.math.log(tf.reduce_mean(exp, 0)) / self.aversion
+
+
+class MeanSquareRisk(RiskMeasure):
+    def __call__(self, x: tf.Tensor) -> tf.Tensor:
+        return tf.reduce_mean(tf.square(x), 0)

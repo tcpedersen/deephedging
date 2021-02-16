@@ -7,7 +7,7 @@ from unittest import TestCase
 from numpy.testing import assert_array_almost_equal
 from tensorflow.debugging import assert_near
 
-from derivative_books import BlackScholesPutCallBook, black_price, black_delta, random_black_scholes_put_call_book
+from books import black_price, black_delta, random_black_scholes_put_call_book
 from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 
 # ==============================================================================
@@ -92,13 +92,13 @@ class test_BlackScholesPutCallBook(TestCase):
                     marginal_deltas[path_idx, book_idx, time_idx] = sign * tf.squeeze(black_delta(*params))
 
         prices = tf.reduce_sum(marginal_prices, axis=1)
-        deltas = np.zeros((num_samples, book.market_size, num_steps + 1))
+        deltas = np.zeros((num_samples, book.instrument_dim, num_steps + 1))
         for path_idx in range(num_samples):
             for time_idx in range(num_steps + 1):
                 deltas[path_idx, :, time_idx] = np.bincount(
                     book.linker,
                     marginal_deltas[path_idx, :, time_idx],
-                    book.market_size)
+                    book.instrument_dim)
 
         out = marginal_prices, marginal_deltas, prices, deltas
         out = [tf.convert_to_tensor(x, FLOAT_DTYPE) for x in out]
@@ -114,9 +114,9 @@ class test_BlackScholesPutCallBook(TestCase):
             self.lazy_marginal(samples, time, book)
 
         # test marginals
-        tradables = book._get_tradables(samples)
-        marginal_prices_result = book._marginal_book_value(tradables, time)
-        marginal_deltas_result = book._marginal_book_delta(tradables, time)
+        instruments = book._get_instruments(samples)
+        marginal_prices_result = book._marginal_book_value(instruments, time)
+        marginal_deltas_result = book._marginal_book_delta(instruments, time)
 
         assert_near(marginal_prices_result, marginal_prices_expected)
         assert_near(marginal_deltas_result, marginal_deltas_expected)
@@ -136,7 +136,7 @@ class test_BlackScholesPutCallBook(TestCase):
         time, samples = book.sample_paths(init_state, num_paths, num_steps, True)
 
         expected_dims = (num_paths,
-                         book.market_size + 1,
+                         book.instrument_dim + 1,
                          num_steps + 1)
         self.assertTupleEqual(tuple(samples.shape), expected_dims)
 

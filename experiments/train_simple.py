@@ -3,7 +3,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 
 from models import SimpleHedge, EntropicRisk
-from derivative_books import random_simple_put_call_book
+from books import random_simple_put_call_book
 from constants import FLOAT_DTYPE
 
 def split_sample(sample):
@@ -33,25 +33,24 @@ hedge_payoff = price + model(train, False)
 plt.figure()
 plt.scatter(train[1][..., -1], price + model(train, False) + train[2], s=0.5)
 
-x = tf.cast(tf.linspace(*plt.xlim(), 100), FLOAT_DTYPE)
+x = tf.cast(tf.linspace(*plt.xlim(), 1000), FLOAT_DTYPE)
 y = book.payoff(x[..., tf.newaxis, tf.newaxis])
 plt.plot(x, y, color="black")
 
 plt.show()
-
 
 # ==============================================================================
 # === test set
 time, test_samples = book.sample_paths(init_state, num_paths, num_steps, False)
 test = split_sample(test_samples)
 
-price = model.loss_fn(model(test, False))
+price = model.risk_measure(model(test, False))
 hedge_payoff = price + model(test, False)
 
 plt.figure()
 plt.scatter(test[1][..., -1], price + model(test, False) + test[2], s=0.5)
 
-x = tf.cast(tf.linspace(*plt.xlim(), 100), FLOAT_DTYPE)
+x = tf.cast(tf.linspace(*plt.xlim(), 1000), FLOAT_DTYPE)
 y = book.payoff(x[..., tf.newaxis, tf.newaxis])
 plt.plot(x, y, color="black")
 
