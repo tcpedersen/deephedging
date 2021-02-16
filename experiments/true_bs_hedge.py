@@ -4,23 +4,24 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import math
 
-from derivative_books import random_black_scholes_put_call_book
+from derivative_books import random_black_scholes_put_call_book, random_simple_put_call_book
 from environments import DerivativeBookHedgeEnv
 from policies import BlackScholesDeltaPolicy
 from metrics import TrainMetric
 
 # ==============================================================================
 # === hyperparameters
-batch_size = 250
-max_episodes = 100
-num_hedges_a_year = 52
+batch_size = 10**5
+max_episodes = 1
+num_hedges_a_year = 250
 
 
 # ==============================================================================
 # === define book
 # seed 23: long call
 # seed 27: short call
-init_state, book = random_black_scholes_put_call_book(1, 1, 1, 420)
+# init_state, book = random_black_scholes_put_call_book(1, 1, 1, 420)
+init_state, book = random_simple_put_call_book()
 num_hedges = math.ceil(num_hedges_a_year * book.maturity)
 
 # ==============================================================================

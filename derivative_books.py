@@ -5,6 +5,8 @@ import numpy as np
 import abc
 import math
 
+from tensorflow.random import uniform
+
 from utils import norm_cdf
 from constants import FLOAT_DTYPE, INT_DTYPE
 
@@ -228,13 +230,11 @@ def simulate_geometric_brownian_motion(maturity: float,
         num_paths : int
         num_steps : int
     Returns:
-        Sample paths of a multivariate GBM (num_paths, market_size,
-                                            num_steps + 1)
+        Sample paths: (num_paths, market_size, num_steps + 1)
     """
-    zero_mean = tf.zeros_like(drift)
-    generator = tfp.distributions.MultivariateNormalFullCovariance(
-        zero_mean, correlation)
-    rvs = generator.sample((num_paths, num_steps))
+    zero_mean = np.zeros_like(drift)
+    size = (num_paths, num_steps)
+    rvs = np.random.multivariate_normal(zero_mean, correlation, size)
 
     dt = maturity / num_steps
     m = (drift - volatility * volatility / 2.) * dt
@@ -423,12 +423,12 @@ def random_black_scholes_put_call_book(
         seed: int):
     tf.random.set_seed(seed)
 
-    maturity = tfp.distributions.Exponential(1).sample(1)
-    strike = tfp.distributions.Poisson(99).sample(book_size) + 1 # ensure positive
+    maturity = uniform((1, ), 0.3, 1.5, FLOAT_DTYPE)
+    strike = uniform((book_size, ), 0.75, 1.25, FLOAT_DTYPE)
     drift = tf.random.uniform((market_size, ), 0.05, 0.1)
     rate = tf.random.uniform((1, ), 0.0, 0.05)
     diffusion = tf.random.uniform(
-        (market_size, num_brownian_motions), 0, 0.5 / num_brownian_motions, FLOAT_DTYPE)
+        (market_size, num_brownian_motions), 0, 0.25 / num_brownian_motions, FLOAT_DTYPE)
     put_call = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
     exposure = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
 
@@ -444,8 +444,26 @@ def random_black_scholes_put_call_book(
         _, book = random_black_scholes_put_call_book(
             book_size, market_size, num_brownian_motions)
 
-    init_risky = tfp.distributions.Poisson(99).sample(market_size) + 1 # ensure positive
-    init_riskless = tfp.distributions.Exponential(1).sample(1)
+    init_risky = uniform((market_size, ), 0.75, 1.25, FLOAT_DTYPE)
+    init_riskless = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
+    init_state = tf.concat([init_risky, init_riskless], axis=0)
+
+    return init_state, book
+
+
+def random_simple_put_call_book(maturity):
+    strike = init_risky = tf.convert_to_tensor([100], FLOAT_DTYPE)
+    drift = tf.convert_to_tensor([0.0], FLOAT_DTYPE)
+    rate = 0.0
+    diffusion = tf.convert_to_tensor([[0.2]], FLOAT_DTYPE)
+    put_call = tf.convert_to_tensor([1], FLOAT_DTYPE)
+    exposure = tf.convert_to_tensor([1], FLOAT_DTYPE) # TODO long the call instead
+    linker = tf.convert_to_tensor([0], INT_DTYPE)
+
+    book = BlackScholesPutCallBook(
+        maturity, strike, drift, rate, diffusion, put_call, exposure, linker)
+
+    init_riskless = tf.convert_to_tensor([1], FLOAT_DTYPE)
     init_state = tf.concat([init_risky, init_riskless], axis=0)
 
     return init_state, book
