@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
+import abc
 
 from tensorflow.keras.layers import Dense, BatchNormalization
 from tensorflow.keras.activations import relu, sigmoid
@@ -62,6 +63,11 @@ class SimpleHedge(tf.keras.models.Model):
                 self.instrument_dim, self.num_layers, self.num_units))
 
 
+    def compile(self, loss_fn, **kwargs):
+        super(SimpleHedge, self).compile(**kwargs)
+        self.loss_fn = loss_fn
+
+
     @tf.function
     def call(self, inputs, training=False):
         """Implementation of call for SimpleHedge.
@@ -74,28 +80,49 @@ class SimpleHedge(tf.keras.models.Model):
             value: (batch_size, )
         """
         information, trade, payoff = inputs
-        wealth = tf.zeros_like(payoff, FLOAT_DTYPE)
-        holdings = tf.zeros_like(trade[..., 0], FLOAT_DTYPE)
+        wealth = -payoff
 
         for step, strategy in enumerate(self.strategy_layers):
-            helper = holdings
             holdings = strategy(information[..., step], training)
-            wealth -= tf.reduce_sum(
-                tf.multiply(holdings - helper, trade[..., step]), 1)
-
-        wealth += tf.reduce_sum(tf.multiply(holdings, trade[..., -1]), 1)
-        wealth -= payoff # TODO minus instead
+            increment = trade[:, :, step + 1] - trade[:, :, step]
+            wealth += tf.reduce_sum(tf.multiply(holdings, increment), 1)
 
         return wealth
 
 
+    @tf.function
+    def train_step(self, data):
+        (x, ) = data
+        with tf.GradientTape() as tape:
+            y = self(x, training=True)
+            loss = self.loss_fn(y)
+
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+
+        return {"loss": loss}
+
+
 # =============================================================================
 # ===
-class EntropicRisk(tf.keras.losses.Loss):
-    def __init__(self, risk_aversion, **kwargs):
-        super(EntropicRisk, self).__init__(**kwargs)
+class RiskMeasure(abc.ABC):
+    @abc.abstractmethod
+    def __call__(self, x: tf.Tensor):
+        """Returns the associated risk of x.
+        Args:
+            x: (batch_size, )
+        Returns:
+            :math: \rho(x) (1, )
+        """
+
+
+class EntropicRisk(RiskMeasure):
+    def __init__(self, risk_aversion):
         self.aversion = float(risk_aversion)
 
     @tf.function
-    def call(self, y_true, y_pred):
-        return tf.exp(-self.aversion * y_pred)
+    def __call__(self, x):
+        exp = tf.exp(-self.aversion * x)
+        return tf.math.log(tf.reduce_mean(exp, -1)) / self.aversion
