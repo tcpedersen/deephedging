@@ -43,6 +43,25 @@ class DenseStrategy(tf.keras.layers.Layer):
         return output
 
 
+class DeltaStrategy(object):
+    def __init__(self, book, **kwargs):
+        self.book = book
+
+
+    def __call__(self, inputs, training=False):
+        """Implementation of call for Strategy.
+        Args:
+            inputs: [time, instruments]
+                time: (1, )
+                instruments: (batch_size, instrument_dim)
+            training: bool
+        Returns:
+            output: (batch_size, instrument_dim)
+        """
+        time, instruments = inputs
+        return self.book.book_delta(instruments, time)[..., -1]
+
+
 # ==============================================================================
 # === Cost Layers
 class ProportionalCost(tf.keras.layers.Layer):
@@ -63,7 +82,7 @@ class ProportionalCost(tf.keras.layers.Layer):
 # === Models
 class Hedge(tf.keras.models.Model, abc.ABC):
     def __init__(self, **kwargs):
-        super(Hedge, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
 
     @property
@@ -91,7 +110,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 
 
     def compile(self, risk_measure, **kwargs):
-        super(Hedge, self).compile(**kwargs)
+        super().compile(**kwargs)
         self.risk_measure = risk_measure
 
 
@@ -164,10 +183,46 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return wealth
 
 
+class DeltaHedge(Hedge):
+    def __init__(self, num_steps, book, **kwargs):
+        super().__init__(**kwargs)
+        self.book = book
+        self._num_steps = int(num_steps)
+
+        self._strategy_layers = [DeltaStrategy(book)] * self.num_steps
+
+
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
+
+
+    @property
+    def instrument_dim(self) -> int:
+        return self.book.instrument_dim
+
+
+    @property
+    def num_steps(self) -> int:
+        return self._num_steps
+
+
+    @property
+    def dt(self) -> tf.Tensor:
+        return tf.constant([self.book.maturity / self.num_steps], FLOAT_DTYPE)
+
+
+    def observation(self, step, information, hedge) -> tf.Tensor:
+        """Implementation of observation for Hedge. Note information must be
+        instruments.
+        """
+        return [step * self.dt, information[..., step]]
+
+
 class SimpleHedge(Hedge):
     def __init__(
             self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
-        super(SimpleHedge, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self._num_steps = int(num_steps)
         self._instrument_dim = int(instrument_dim)
@@ -176,6 +231,7 @@ class SimpleHedge(Hedge):
         for _ in range(self.num_steps):
             self._strategy_layers.append(DenseStrategy(
                 self.instrument_dim, num_layers, num_units))
+
 
     @property
     def strategy_layers(self) -> list:
@@ -194,8 +250,43 @@ class SimpleHedge(Hedge):
 
     @tf.function
     def observation(self, step, information, hedge):
-        """Implementation of observation for SimpleHedge."""
         return information[..., step]
+
+
+class RecurrentHedge(Hedge):
+    def __init__(
+            self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
+        super().__init__(**kwargs)
+
+        self._num_steps = int(num_steps)
+        self._instrument_dim = int(instrument_dim)
+
+        self._strategy_layers = [
+            DenseStrategy(
+                self.instrument_dim,
+                num_layers,
+                num_units)] * self.num_steps
+
+
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
+
+
+    @property
+    def instrument_dim(self) -> int:
+        return self._instrument_dim
+
+
+    @property
+    def num_steps(self) -> int:
+        return self._num_steps
+
+
+    @tf.function
+    def observation(self, step, information, hedge):
+        time = tf.ones_like(information[..., 0], FLOAT_DTYPE) * step
+        return tf.concat([time, information[..., step]], 1)
 
 # =============================================================================
 # ===
@@ -214,7 +305,7 @@ class EntropicRisk(RiskMeasure):
     def __init__(self, risk_aversion):
         self.aversion = float(risk_aversion)
 
-    @tf.function
+
     def __call__(self, x):
         exp = tf.exp(-self.aversion * x)
         return tf.math.log(tf.reduce_mean(exp, 0)) / self.aversion

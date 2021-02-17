@@ -22,17 +22,17 @@ class DerivativeBook(abc.ABC):
     @property
     @abc.abstractmethod
     def instrument_dim(self) -> int:
-        """Number of underlying risky tradable processes."""
+        """Number of underlying risky instruments processes."""
 
 
     @property
     @abc.abstractmethod
     def non_instrument_dim(self) -> int:
-        """Number of underlying non-tradable processes."""
+        """Number of underlying non-instruments processes."""
 
 
     @property
-    def state_dimension(self) -> int:
+    def state_dim(self) -> int:
         """Returns the dimensionalility of the state."""
         return self.instrument_dim + 1 + self.non_instrument_dim
 
@@ -42,11 +42,11 @@ class DerivativeBook(abc.ABC):
         Args:
             state: state_like
         Returns:
-            state: (num_samples, state_dimension, num_steps + 1)
+            state: (num_samples, state_dim, num_steps + 1)
         """
         state = tf.convert_to_tensor(state, FLOAT_DTYPE)
 
-        dimension = state.ndim
+        dimension = len(state.shape)
         if dimension == 1:
             return state[tf.newaxis, :, tf.newaxis]
         elif dimension == 2:
@@ -66,7 +66,7 @@ class DerivativeBook(abc.ABC):
     def _payoff(self, state: tf.Tensor) -> tf.Tensor:
         """Compute payoff from terminal state.
         Args:
-            state: (num_samples, state_dimension, num_steps + 1)
+            state: (num_samples, state_dim, num_steps + 1)
         Returns:
             payoff: (num_samples, )
         """
@@ -81,7 +81,7 @@ class DerivativeBook(abc.ABC):
     def _book_value(self, state: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
         """Compute value of book at each point in time.
         Args:
-            state: (num_samples, state_dimension, num_steps + 1)
+            state: (num_samples, state_dim, num_steps + 1)
             time: (num_steps + 1, )
         Returns:
             value: (num_samples, num_steps + 1)
@@ -96,13 +96,13 @@ class DerivativeBook(abc.ABC):
                      risk_neutral: bool) -> tf.Tensor:
         """Simulate sample paths of risky assets.
         Args:
-            init_state: (state_dimension, )
+            init_state: (state_dim, )
             num_paths: int
             num_steps: int
             risk_neutral: bool
         Returns:
             time: (num_steps + 1, )
-            sample paths: (num_paths, state_dimension, num_steps + 1)
+            sample paths: (num_paths, state_dim, num_steps + 1)
         """
 
 # ==============================================================================
@@ -134,10 +134,6 @@ def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
                - _strike * norm_cdf(_theta * (m_over_v - v_over_2)))
 
     return value
-
-    # diff = theta * (spot - strike)
-    # itm = tf.cast(diff > 0, FLOAT_DTYPE)
-    # return diff * itm
 
 
 def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
@@ -271,10 +267,10 @@ class BlackScholesPutCallBook(DerivativeBook):
             else self.drift
 
         # simulate risky paths
-        tradable = init_state[:self.instrument_dim]
+        instruments = init_state[:self.instrument_dim]
         risk = simulate_geometric_brownian_motion(
             self.maturity,
-            tradable,
+            instruments,
             measure_drift,
             self.volatility,
             self.correlation,
@@ -292,11 +288,11 @@ class BlackScholesPutCallBook(DerivativeBook):
 
     # === other
     def _get_instruments(self, state: tf.Tensor) -> tf.Tensor:
-        """Extract tradable assets from state.
+        """Extract instruments assets from state.
         Args:
             state: see DerivativeBook._force_state_shape
         Returns:
-            tradable: (num_samples, instrument_dim, num_steps + 1)
+            instruments: (num_samples, instrument_dim, num_steps + 1)
         """
         return state[:, :self.instrument_dim, :]
 
@@ -335,7 +331,7 @@ class BlackScholesPutCallBook(DerivativeBook):
         gradient = self._marginal_book_delta(instruments, time)
 
         v = []
-        for k in tf.range(self.instrument_dim):
+        for k in range(self.instrument_dim):
             mask = tf.where(self.linker == k)[:, 0]
             v.append(tf.reduce_sum(
                 tf.gather(gradient, mask, axis=1), axis=1, keepdims=True))
@@ -397,12 +393,12 @@ def random_black_scholes_put_call_book(
 
 
 def random_simple_put_call_book(maturity):
-    strike = init_risky = tf.convert_to_tensor([100], FLOAT_DTYPE)
+    strike = init_risky = tf.convert_to_tensor([1], FLOAT_DTYPE)
     drift = tf.convert_to_tensor([0.0], FLOAT_DTYPE)
     rate = 0.0
     diffusion = tf.convert_to_tensor([[0.2]], FLOAT_DTYPE)
     put_call = tf.convert_to_tensor([1], FLOAT_DTYPE)
-    exposure = tf.convert_to_tensor([1], FLOAT_DTYPE) # TODO long the call instead
+    exposure = tf.convert_to_tensor([1], FLOAT_DTYPE)
     linker = tf.convert_to_tensor([0], INT_DTYPE)
 
     book = BlackScholesPutCallBook(

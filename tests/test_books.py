@@ -7,7 +7,7 @@ from unittest import TestCase
 from numpy.testing import assert_array_almost_equal
 from tensorflow.debugging import assert_near
 
-from books import black_price, black_delta, random_black_scholes_put_call_book
+from books import black_price, black_delta, random_black_scholes_put_call_book, random_simple_put_call_book
 from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 
 # ==============================================================================
@@ -130,21 +130,22 @@ class test_BlackScholesPutCallBook(TestCase):
 
 
     def test_sample_paths(self):
-        init_state, book = random_black_scholes_put_call_book(4, 4, 4, 1)
+        for init_state, book in [random_black_scholes_put_call_book(4, 4, 4, 1),
+                                 random_simple_put_call_book(3.)]:
 
-        num_paths, num_steps = 2**21, 2
-        time, samples = book.sample_paths(init_state, num_paths, num_steps, True)
+            num_paths, num_steps = 2**21, 2
+            time, samples = book.sample_paths(init_state, num_paths, num_steps, True)
 
-        expected_dims = (num_paths,
-                         book.instrument_dim + 1,
-                         num_steps + 1)
-        self.assertTupleEqual(tuple(samples.shape), expected_dims)
+            expected_dims = (num_paths,
+                             book.instrument_dim + 1,
+                             num_steps + 1)
+            self.assertTupleEqual(tuple(samples.shape), expected_dims)
 
-        payoff = book.payoff(samples)
-        self.assertTupleEqual(tuple(payoff.shape), (num_paths, ))
+            payoff = book.payoff(samples)
+            self.assertTupleEqual(tuple(payoff.shape), (num_paths, ))
 
-        deflator = math.exp(-book.rate * book.maturity)
-        price_result = deflator * tf.reduce_mean(payoff, axis=0)
-        price_expected = book.book_value(init_state[tf.newaxis, :, tf.newaxis], 0)
+            deflator = math.exp(-book.rate * book.maturity)
+            price_result = deflator * tf.reduce_mean(payoff, axis=0)
+            price_expected = book.book_value(init_state[tf.newaxis, :, tf.newaxis], 0)
 
-        assert_near(price_result[tf.newaxis, tf.newaxis], price_expected, atol=2)
+            assert_near(price_result[tf.newaxis, tf.newaxis], price_expected, atol=2)
