@@ -111,6 +111,8 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 
     def compile(self, risk_measure, **kwargs):
         super().compile(**kwargs)
+
+        assert issubclass(type(risk_measure), OCERiskMeasure)
         self.risk_measure = risk_measure
 
 
@@ -121,7 +123,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             y = self(x, training=True)
             loss = self.risk_measure(y)
 
-        trainable_vars = self.trainable_variables
+        trainable_vars = [self.risk_measure.w] + self.trainable_variables
         gradients = tape.gradient(loss, trainable_vars)
 
         self.optimizer.apply_gradients(zip(gradients, trainable_vars))
@@ -293,27 +295,39 @@ class RecurrentHedge(Hedge):
 
 # =============================================================================
 # ===
-class RiskMeasure(abc.ABC):
+class OCERiskMeasure(abc.ABC):
+    def __init__(self):
+        self.w = tf.Variable(0., trainable=True)
+
+    def __call__(self, x: tf.Tensor):
+        return self.w + tf.reduce_mean(self.loss(-x - self.w), 0)
+
     @abc.abstractmethod
-    def __call__(self, x: tf.Tensor) -> tf.Tensor:
-        """Returns the associated risk of x.
+    def loss(self, x: tf.Tensor) -> tf.Tensor:
+        """Returns the associated loss of x.
         Args:
             x: (batch_size, )
         Returns:
-            (1, )
+            loss: (batch_size, )
         """
 
 
-class EntropicRisk(RiskMeasure):
+class EntropicRisk(OCERiskMeasure):
     def __init__(self, risk_aversion):
+        super().__init__()
         self.aversion = float(risk_aversion)
 
 
-    def __call__(self, x):
-        exp = tf.exp(-self.aversion * x)
-        return tf.math.log(tf.reduce_mean(exp, 0)) / self.aversion
+    def loss(self, x):
+        return tf.exp(self.aversion * x) - (1. + tf.math.log(self.aversion)) \
+            / self.aversion
 
 
-class MeanSquareRisk(RiskMeasure):
-    def __call__(self, x: tf.Tensor) -> tf.Tensor:
-        return tf.reduce_mean(tf.square(x), 0)
+class ExpectedShortfall(OCERiskMeasure):
+    def __init__(self, alpha):
+        super().__init__()
+        self.alpha = float(alpha)
+
+
+    def loss(self, x):
+        return tf.nn.relu(x) / (1. - self.alpha)
