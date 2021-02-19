@@ -158,6 +158,9 @@ class Hedge(tf.keras.models.Model, abc.ABC):
     @tf.function
     def call(self, inputs, training=False):
         """Implementation of call for tf.keras.models.Model.
+        The instruments and payoff are assumed to be expressed in terms of the
+        numeraire.
+
         Args:
             inputs: [information, instruments, payoff]
                 information: (batch_size, None, num_steps)

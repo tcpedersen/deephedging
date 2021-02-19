@@ -102,7 +102,7 @@ class DerivativeBook(abc.ABC):
             risk_neutral: bool
         Returns:
             time: (num_steps + 1, )
-            sample paths: (num_paths, state_dim, num_steps + 1)
+            sample paths: (num_samples, state_dim, num_steps + 1)
         """
 
 # ==============================================================================
