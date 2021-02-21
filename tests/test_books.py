@@ -107,30 +107,30 @@ class test_BlackScholesPutCallBook(TestCase):
 
 
     def test_book_value_multivariate(self):
-        init_state, book = random_black_scholes_put_call_book(4, 4, 4, 1)
+        init_state, book = random_black_scholes_put_call_book(1.25, 4, 4, 3, 69)
         time, samples = book.sample_paths(init_state, 3, 5, True)
 
-        marginal_prices_expected, marginal_deltas_expected, prices_expected, deltas_expected = \
-            self.lazy_marginal(samples, time, book)
+        marginal_prices_expected, marginal_deltas_expected, prices_expected, \
+            deltas_expected = self.lazy_marginal(samples, time, book)
 
         # test marginals
         instruments = book._get_instruments(samples)
         marginal_prices_result = book._marginal_book_value(instruments, time)
         marginal_deltas_result = book._marginal_book_delta(instruments, time)
 
-        assert_near(marginal_prices_result, marginal_prices_expected)
-        assert_near(marginal_deltas_result, marginal_deltas_expected)
+        assert_near(marginal_prices_result, marginal_prices_expected, atol=1e-5)
+        assert_near(marginal_deltas_result, marginal_deltas_expected, atol=1e-5)
 
         # test book value
         price_result = book.book_value(samples, time)
         delta_result = book.book_delta(samples, time)
 
-        assert_near(price_result, prices_expected)
-        assert_near(delta_result, deltas_expected)
+        assert_near(price_result, prices_expected, atol=1e-5)
+        assert_near(delta_result, deltas_expected, atol=1e-5)
 
 
     def test_sample_paths(self):
-        for init_state, book in [random_black_scholes_put_call_book(4, 4, 4, 1),
+        for init_state, book in [random_black_scholes_put_call_book(4, 4, 4, 1, 69),
                                  random_simple_put_call_book(3.)]:
 
             num_paths, num_steps = 2**21, 2

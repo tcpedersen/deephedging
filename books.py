@@ -105,6 +105,29 @@ class DerivativeBook(abc.ABC):
             sample paths: (num_samples, state_dim, num_steps + 1)
         """
 
+
+    def gradient_paths(self, init_state, num_paths, num_steps):
+        """Simulates paths, gradients and payoffs.
+        Args:
+            init_state: (state_dim, )
+            num_paths: int
+            num_steps: int
+        Returns:
+            time: (num_steps + 1, )
+            paths: (num_samples, state_dim, num_steps + 1)
+            grads: (num_samples, num_steps + 1)
+            payoff: (num_samples, )
+        """
+        with tf.GradientTape(watch_accessed_variables=False) as tape:
+            tape.watch(init_state)
+            time, paths = self.sample_paths(init_state, num_paths, num_steps, True)
+            payoff = self.payoff(paths)
+            price = tf.reduce_mean(payoff)
+        grads = tape.batch_jacobian(price, paths)
+
+        return time, paths, grads, payoff
+
+
 # ==============================================================================
 # === Black Scholes
 def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
@@ -173,22 +196,27 @@ def simulate_geometric_brownian_motion(maturity: float,
     Returns:
         Sample paths: (num_paths, instrument_dim, num_steps + 1)
     """
-    zero_mean = np.zeros_like(drift)
+    zero_mean = tf.zeros_like(drift)
     size = (num_paths, num_steps)
     rvs = np.random.multivariate_normal(zero_mean, correlation, size)
+    rvs = tf.convert_to_tensor(rvs, FLOAT_DTYPE)
 
     dt = maturity / num_steps
     m = (drift - volatility * volatility / 2.) * dt
     v = volatility * math.sqrt(dt)
     rvs = tf.exp(m + v * rvs)
 
-    paths = np.zeros((num_paths, len(init_state), num_steps + 1))
-    paths[:, :, 0] = init_state
+    # paths = tf.zeros((num_paths, len(init_state), num_steps + 1))
+    # paths[:, :, 0] = init_state
+
+    state = tf.tile(init_state[tf.newaxis, :], (num_paths, 1))
+    paths = [state]
 
     for idx in range(num_steps):
-        paths[:, :, idx + 1] = paths[:, :, idx] * rvs[:, idx]
+        state = state * rvs[:, idx]
+        paths.append(state)
 
-    return tf.convert_to_tensor(paths, FLOAT_DTYPE)
+    return tf.stack(paths, axis=-1)
 
 
 class BlackScholesPutCallBook(DerivativeBook):
@@ -276,6 +304,7 @@ class BlackScholesPutCallBook(DerivativeBook):
             self.correlation,
             num_paths,
             num_steps)
+
 
         # simulate riskless path
         time_grid = tf.linspace(0., self.maturity, num_steps + 1)
