@@ -360,12 +360,15 @@ class BlackScholesPutCallBook(DerivativeBook):
 
 
 def random_black_scholes_put_call_book(
-        book_size: int, instrument_dim: int, num_brownian_motions: int,
+        maturity: float,
+        book_size: int,
+        instrument_dim: int,
+        num_brownian_motions: int,
         seed: int):
     tf.random.set_seed(seed)
 
-    maturity = uniform((1, ), 0.3, 1.5, FLOAT_DTYPE)
-    strike = uniform((book_size, ), 0.75, 1.25, FLOAT_DTYPE)
+    maturity = float(maturity)
+    strike = uniform((book_size, ), 75, 125, FLOAT_DTYPE)
     drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1)
     rate = tf.random.uniform((1, ), 0.0, 0.05)
     diffusion = tf.random.uniform(
@@ -381,11 +384,7 @@ def random_black_scholes_put_call_book(
     book = BlackScholesPutCallBook(
         maturity, strike, drift, rate, diffusion, put_call, exposure, linker)
 
-    if tf.reduce_any(book.volatility > 0.5):
-        _, book = random_black_scholes_put_call_book(
-            book_size, instrument_dim, num_brownian_motions)
-
-    init_risky = uniform((instrument_dim, ), 0.75, 1.25, FLOAT_DTYPE)
+    init_risky = uniform((instrument_dim, ), 75, 125, FLOAT_DTYPE)
     init_riskless = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
     init_state = tf.concat([init_risky, init_riskless], axis=0)
 

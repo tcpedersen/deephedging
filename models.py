@@ -11,7 +11,7 @@ from constants import FLOAT_DTYPE
 # === Strategy layers
 class DenseStrategy(tf.keras.layers.Layer):
     def __init__(self, instrument_dim, num_layers, num_units, **kwargs):
-        super(DenseStrategy, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.instrument_dim = int(instrument_dim)
 
@@ -65,18 +65,24 @@ class DeltaStrategy(object):
 # ==============================================================================
 # === Cost Layers
 class ProportionalCost(tf.keras.layers.Layer):
+    def __init__(self, cost, **kwargs):
+        super().__init__(**kwargs)
+        self.cost = tf.constant(float(cost), FLOAT_DTYPE)
+
+
     @tf.function
     def call(self, inputs):
         """Implementation of call for ProportionalCost.
         Args:
-            inputs: [delta_holdings, instruments]
-                delta_holdings: (batch_size, instrument_dim)
+            inputs: [shift, instruments]
+                shift: (batch_size, instrument_dim)
                 instruments: (batch_size, instrument_dim)
         Returns:
             output: (batch_size, )
         """
-        delta_holdings, instruments = inputs
-        return tf.reduce_sum(tf.multiply(delta_holdings * instruments), 1)
+        shift, instruments = inputs
+        return tf.reduce_sum(
+            self.cost * tf.multiply(instruments * tf.abs(shift)), 1)
 
 # ==============================================================================
 # === Models
@@ -224,6 +230,15 @@ class DeltaHedge(Hedge):
         return [step * self.dt, information[..., step]]
 
 
+class CostDeltaHedge(DeltaHedge):
+    def __init__(self, num_steps, book, cost, **kwargs):
+        super().__init__(num_steps, book, **kwargs)
+
+        self._cost_layers = []
+        for _ in range(self.num_steps):
+            self._cost_layers.append(ProportionalCost(cost))
+
+
 class SimpleHedge(Hedge):
     def __init__(
             self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
@@ -258,40 +273,20 @@ class SimpleHedge(Hedge):
         return information[..., step]
 
 
-class RecurrentHedge(Hedge):
-    def __init__(
-            self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
-        super().__init__(**kwargs)
+class CostSimpleHedge(SimpleHedge):
+    def __init__(self, num_steps, instrument_dim, num_layers, num_units, cost,
+                 **kwargs):
+        super().__init__(num_steps, instrument_dim, num_layers, num_units,
+                         **kwargs)
 
-        self._num_steps = int(num_steps)
-        self._instrument_dim = int(instrument_dim)
-
-        self._strategy_layers = [
-            DenseStrategy(
-                self.instrument_dim,
-                num_layers,
-                num_units)] * self.num_steps
-
-
-    @property
-    def strategy_layers(self) -> list:
-        return self._strategy_layers
-
-
-    @property
-    def instrument_dim(self) -> int:
-        return self._instrument_dim
-
-
-    @property
-    def num_steps(self) -> int:
-        return self._num_steps
+        self._cost_layers = []
+        for _ in range(self.num_steps):
+            self._cost_layers.append(ProportionalCost(cost))
 
 
     @tf.function
     def observation(self, step, information, hedge):
-        time = tf.ones_like(information[..., 0], FLOAT_DTYPE) * step
-        return tf.concat([time, information[..., step]], 1)
+        return tf.concat([information[..., step], hedge], 1)
 
 # =============================================================================
 # ===
