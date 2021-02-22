@@ -30,7 +30,7 @@ def train_model(model, inputs, alpha, normalise=True):
     model.compile(risk_measure, optimizer=optimizer)
 
     # define callbacks
-    batch_size, epochs = 2**10, 50
+    batch_size, epochs = 2**10, 100
 
     early_stopping = EarlyStopping(monitor="loss", patience=10, min_delta=1e-4)
     reduce_lr = ReduceLROnPlateau(monitor="loss", verbose=1, patience=2)
@@ -87,15 +87,15 @@ def plot_distributions(models, inputs, prices):
 
 # ==============================================================================
 # === hyperparameters
-num_train_paths, num_test_paths, num_steps = int(4 * 10**6), int(10**6), 7
+num_train_paths, num_test_paths, num_steps = int(10**6), int(10**6), 7
 alpha = 0.95
-cost = 0.15 / 100
+cost = 1. / 100
+
 
 # ==============================================================================
 # === sample train data
 init_state, book = random_black_scholes_put_call_book(
-    num_steps / 250, 10, 10, 10, 69)
-
+    num_steps / 250, 25, 10, 10, 69)
 time, train_samples = book.sample_paths(
     init_state, num_train_paths, num_steps, False)
 
@@ -140,8 +140,12 @@ test = split_sample(test_samples)
 # ==============================================================================
 # === calculate risk
 norm_test, simple_risk = test_model(simple_model, test, normaliser)
+
+benchmark = [test[1], test[1], test[2]]
 norm_benchmark, benchmark_risk = test_model(benchmark_model, test, None)
-_, no_liability_risk = test_model(no_liability_model, test, normaliser)
+
+no_liability = [test[0], test[1], tf.zeros_like(test[2])]
+_, no_liability_risk = test_model(no_liability_model, no_liability, normaliser)
 
 print(f"simple model risk: {simple_risk:5f}")
 print(f"benchmark risk: {benchmark_risk:5f}")
@@ -152,7 +156,7 @@ print(f"no liability risk: {no_liability_risk:5f}")
 # === calculate prices
 simple_model_price = (simple_risk - no_liability_risk)
 benchmark_price = (book.book_value(init_state, 0.) / init_state[-1])[0, 0]
-no_liability_price = 0.
+no_liability_price = 0. # TODO is this true?
 
 print(f"simple_model price: {simple_model_price:5f}")
 print(f"benchmark price: {benchmark_price:5f}")

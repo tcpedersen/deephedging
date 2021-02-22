@@ -58,6 +58,7 @@ class DeltaStrategy(object):
         Returns:
             output: (batch_size, instrument_dim)
         """
+        # TODO should handle instruments being in terms of numeraire.
         time, instruments = inputs
         return self.book.book_delta(instruments, time)[..., -1]
 
@@ -82,13 +83,15 @@ class ProportionalCost(tf.keras.layers.Layer):
         """
         shift, instruments = inputs
         return tf.reduce_sum(
-            self.cost * tf.multiply(instruments * tf.abs(shift)), 1)
+            self.cost * tf.multiply(instruments, tf.abs(shift)), 1)
 
 # ==============================================================================
 # === Models
 class Hedge(tf.keras.models.Model, abc.ABC):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._use_gradients = False
+        self._cost_layers = []
 
 
     @property
@@ -112,7 +115,17 @@ class Hedge(tf.keras.models.Model, abc.ABC):
     @property
     def cost_layers(self) -> list:
         """Returns the cost layers or None if no transaction costs."""
-        return None
+        return self._cost_layers
+
+
+    @property
+    def use_gradients(self) -> bool:
+        """Returns bool indicating whether to use gradients in hedge."""
+        return self._use_gradients
+
+    @use_gradients.setter
+    def use_gradients(self, val):
+        self._use_gradients = bool(val)
 
 
     def compile(self, risk_measure, **kwargs):
@@ -174,10 +187,15 @@ class Hedge(tf.keras.models.Model, abc.ABC):
                 information: (batch_size, None, num_steps)
                 instruments: (batch_size, instrument_dim, num_steps + 1)
                 payoff: (batch_size, ) payoff at time num_steps + 1
+                gradients (optional): (batch_size, instrument_dim, num_steps)
         Returns:
             value: (batch_size, )
         """
-        information, instruments, payoff = inputs
+        if self.use_gradients:
+            information, instruments, payoff, gradients = inputs
+        else:
+            information, instruments, payoff = inputs
+
         wealth = -payoff
         hedge = tf.zeros_like(instruments[..., 0], FLOAT_DTYPE)
 
@@ -185,9 +203,13 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             observation = self.observation(step, information, hedge)
             old_hedge = hedge
             hedge = strategy(observation, training)
+
+            if self.use_gradients:
+                hedge += gradients[..., step]
+
             costs = self.costs(step, hedge, old_hedge, instruments)
 
-            increment = instruments[:, :, step + 1] - instruments[:, :, step]
+            increment = instruments[..., step + 1] - instruments[..., step]
             wealth += tf.reduce_sum(tf.multiply(hedge, increment), 1)
             wealth -= costs
 
@@ -234,7 +256,6 @@ class CostDeltaHedge(DeltaHedge):
     def __init__(self, num_steps, book, cost, **kwargs):
         super().__init__(num_steps, book, **kwargs)
 
-        self._cost_layers = []
         for _ in range(self.num_steps):
             self._cost_layers.append(ProportionalCost(cost))
 

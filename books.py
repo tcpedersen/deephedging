@@ -8,7 +8,7 @@ from tensorflow.random import uniform
 
 from utils import norm_cdf, near_positive_definite
 from constants import FLOAT_DTYPE, INT_DTYPE, FLOAT_DTYPE_EPS
-from simulators import GBM
+from simulators import GBM, ConstantBankAccount
 
 # ==============================================================================
 # === Base
@@ -253,7 +253,7 @@ class BlackScholesPutCallBook(DerivativeBook):
             / (self.volatility[:, tf.newaxis] @ self.volatility[tf.newaxis, :])
         self.correlation = near_positive_definite(self.correlation)
 
-
+        self.bank_simulator = ConstantBankAccount(self.rate)
         self.psimulator = GBM(maturity, drift, self.volatility, self.correlation)
 
         qdrift = tf.cast(tf.ones_like(self.drift) * self.rate, FLOAT_DTYPE)
@@ -305,12 +305,44 @@ class BlackScholesPutCallBook(DerivativeBook):
         risk = tf.stack(risk, -1)
 
         # simulate riskless path
-        time_grid = tf.linspace(0., self.maturity, num_steps + 1)
+        time = tf.linspace(0., self.maturity, num_steps + 1)
         single_path = init_state[self.instrument_dim] \
-            * tf.exp(self.rate * time_grid)
+            * tf.exp(self.rate * time)
         riskless = tf.tile(single_path[tf.newaxis, :], (num_paths, 1))
 
-        return time_grid, tf.concat((risk, riskless[:, tf.newaxis, :]), axis=1)
+        return time, tf.concat((risk, riskless[:, tf.newaxis, :]), axis=1)
+
+
+    def gradient_sample(self, init_state, batch_size, num_steps, risk_neutral):
+        """???
+        Args:
+            ...
+        Returns:
+            time, paths, grads, payoff
+        """
+        time = tf.linspace(0., self.maturity, num_steps + 1)
+        simulator = self.qsimulator if risk_neutral else self.psimulator
+
+        with tf.GradientTape() as tape:
+            tape.watch(init_state)
+
+            numeraire = init_state[tf.newaxis, -1]
+            instruments = init_state[:self.instrument_dim]
+
+            numeraire_paths = self.bank_simulator.simulate(
+                self.maturity, numeraire, batch_size, num_steps)
+            instruments_paths = simulator.simulate(
+                self.maturity, instruments, batch_size, num_steps)
+
+            payoff = self.payoff(instruments_paths[-1]) / numeraire_paths[-1][:, 0]
+
+        grads = tape.batch_jacobian(payoff, [instruments_paths, numeraire_paths])
+
+        paths = tf.concat(
+            [tf.stack(instruments_paths, -1), tf.stack(numeraire_paths, -1)], 1)
+        grads = tf.concat([tf.stack(grads[0], -1), tf.stack(grads[1], -1)], 1)
+
+        return time, paths, grads, payoff
 
 
     # === other
@@ -397,7 +429,7 @@ def random_black_scholes_put_call_book(
     maturity = float(maturity)
     strike = uniform((book_size, ), 75, 125, FLOAT_DTYPE)
     drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1, dtype=FLOAT_DTYPE)
-    rate = tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE)
+    rate = 0. # tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE) # TODO
     diffusion = tf.random.uniform(
         (instrument_dim, num_brownian_motions), 0, 0.25 / num_brownian_motions, FLOAT_DTYPE)
     put_call = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1, FLOAT_DTYPE)
@@ -434,6 +466,3 @@ def random_simple_put_call_book(maturity):
     init_state = tf.concat([init_risky, init_riskless], axis=0)
 
     return init_state, book
-
-
-

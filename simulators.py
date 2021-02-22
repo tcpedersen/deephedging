@@ -74,3 +74,17 @@ class GBM(Simulator):
         rvs = tf.exp(m + v * rvs)
 
         return state * rvs
+
+
+class ConstantBankAccount(Simulator):
+    def __init__(self, rate):
+        self.rate = tf.constant((float(rate), ), FLOAT_DTYPE)
+
+
+    @property
+    def correlation(self) -> tf.Tensor:
+        return tf.constant([[1.]], FLOAT_DTYPE)
+
+
+    def advance(self, state, rvs, dt):
+        return state + state * self.rate * dt
