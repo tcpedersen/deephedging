@@ -5,6 +5,8 @@ import numpy as np
 from scipy.special import erfinv
 from tensorflow_probability.python.internal import special_math
 
+from constants import FLOAT_DTYPE_EPS, FLOAT_DTYPE
+
 ONE_OVER_SQRT_TWO_PI = 1. / np.sqrt(2. * np.pi)
 SQRT_TWO = np.sqrt(2.)
 
@@ -18,6 +20,14 @@ def norm_cdf(x):
 
 def norm_qdf(x):
     return erfinv(2. * x - 1.) * SQRT_TWO
+
+def near_positive_definite(A):
+    C = (A + tf.transpose(A)) / 2.
+    eigval, eigvec = tf.linalg.eig(C)
+    eigval = tf.where(tf.math.real(eigval) < 0, 0, eigval)
+    psd = tf.math.real(eigvec @ tf.linalg.diag(eigval) @ tf.transpose(eigvec))
+
+    return psd + tf.eye(psd.shape[0], dtype=FLOAT_DTYPE) * tf.sqrt(FLOAT_DTYPE_EPS)
 
 # ==============================================================================
 # === Training

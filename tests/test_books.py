@@ -8,6 +8,7 @@ from numpy.testing import assert_array_almost_equal
 from tensorflow.debugging import assert_near
 
 from books import black_price, black_delta, random_black_scholes_put_call_book, random_simple_put_call_book
+
 from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 
 # ==============================================================================
@@ -64,6 +65,27 @@ class test_black(TestCase):
 
         assert_array_almost_equal(price_result, price_expected)
         assert_array_almost_equal(delta_result, delta_expected)
+
+
+# class test_geometric_brownian_motion(TestCase):
+#     def test_derivatives(self):
+#         batch_size, num_steps = 1, 5
+#         init_state, book = random_black_scholes_put_call_book(1.25, 1, 1, 1, 99)
+
+#         with tf.GradientTape() as tape:
+#             tape.watch(init_state)
+#             samples = book.sample_paths(
+#                 init_state, batch_size, num_steps, True)
+
+#             # instruments = book._get_instruments(samples)[..., -1]
+#             # diff = book.put_call * (tf.gather(instruments, book.linker, axis=1) - book.strike)
+#             # itm = tf.cast(diff > 0, FLOAT_DTYPE)
+#             # payoff = tf.squeeze((diff * itm) @ book.exposure[:, tf.newaxis])
+
+
+#             # payoff = book.payoff(samples)
+#             price = samples[-1]
+#         grads = tape.gradient(price, samples)
 
 # ==============================================================================
 # === BlackScholesPutCallBook

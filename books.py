@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
 import tensorflow_probability as tfp
-import numpy as np
 import abc
 import math
 
 from tensorflow.random import uniform
 
-from utils import norm_cdf
-from constants import FLOAT_DTYPE, INT_DTYPE
+from utils import norm_cdf, near_positive_definite
+from constants import FLOAT_DTYPE, INT_DTYPE, FLOAT_DTYPE_EPS
+from simulators import GBM
 
 # ==============================================================================
 # === Base
@@ -176,47 +176,44 @@ def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
 
     return _theta * norm_cdf(_theta * (m / v + v / 2.))
 
+# @tf.function
+# def simulate_geometric_brownian_motion(maturity: float,
+#                                        init_state: tf.Tensor,
+#                                        drift: tf.Tensor,
+#                                        volatility: tf.Tensor,
+#                                        correlation: tf.Tensor,
+#                                        num_paths: int,
+#                                        num_steps: int) -> tf.Tensor:
+#     """Simulate a multivariate GBM.
+#     Args:
+#         maturity: float
+#         init_state: (instrument_dim, )
+#         drift : (instrument_dim, )
+#         volatility: (instrument_dim, )
+#         correlation : (instrument_dim, instrument_dim)
+#         num_paths : int
+#         num_steps : int
+#     Returns:
+#         Sample paths: (num_paths, instrument_dim, num_steps + 1)
+#     """
+#     zero_mean = tf.zeros_like(drift)
+#     size = (num_paths, num_steps)
+#     scale_tril = tf.linalg.cholesky(correlation)
+#     normal = tfp.distributions.MultivariateNormalTriL
+#     rvs = normal(zero_mean, scale_tril).sample(size)
 
-def simulate_geometric_brownian_motion(maturity: float,
-                                       init_state: tf.Tensor,
-                                       drift: tf.Tensor,
-                                       volatility: tf.Tensor,
-                                       correlation: tf.Tensor,
-                                       num_paths: int,
-                                       num_steps: int) -> tf.Tensor:
-    """Simulate a multivariate GBM.
-    Args:
-        maturity: float
-        init_state: (instrument_dim, )
-        drift : (instrument_dim, )
-        volatility: (instrument_dim, )
-        correlation : (instrument_dim, instrument_dim)
-        num_paths : int
-        num_steps : int
-    Returns:
-        Sample paths: (num_paths, instrument_dim, num_steps + 1)
-    """
-    zero_mean = tf.zeros_like(drift)
-    size = (num_paths, num_steps)
-    rvs = np.random.multivariate_normal(zero_mean, correlation, size)
-    rvs = tf.convert_to_tensor(rvs, FLOAT_DTYPE)
+#     dt = maturity / num_steps
+#     m = (drift - volatility * volatility / 2.) * dt
+#     v = volatility * math.sqrt(dt)
+#     rvs = tf.exp(m + v * rvs)
 
-    dt = maturity / num_steps
-    m = (drift - volatility * volatility / 2.) * dt
-    v = volatility * math.sqrt(dt)
-    rvs = tf.exp(m + v * rvs)
+#     #paths = [tf.tile(init_state[tf.newaxis, :], (num_paths, 1))]
+#     paths = [init_state]
 
-    # paths = tf.zeros((num_paths, len(init_state), num_steps + 1))
-    # paths[:, :, 0] = init_state
+#     for idx in range(num_steps):
+#         paths.append(paths[-1] * rvs[:, idx])
 
-    state = tf.tile(init_state[tf.newaxis, :], (num_paths, 1))
-    paths = [state]
-
-    for idx in range(num_steps):
-        state = state * rvs[:, idx]
-        paths.append(state)
-
-    return tf.stack(paths, axis=-1)
+#     return paths
 
 
 class BlackScholesPutCallBook(DerivativeBook):
@@ -250,9 +247,17 @@ class BlackScholesPutCallBook(DerivativeBook):
         self.exposure = tf.convert_to_tensor(exposure, FLOAT_DTYPE)
         self.linker = tf.convert_to_tensor(linker, INT_DTYPE)
 
+
         self.volatility = tf.linalg.norm(self.diffusion, axis=1)
         self.correlation = (self.diffusion @ tf.transpose(self.diffusion)) \
             / (self.volatility[:, tf.newaxis] @ self.volatility[tf.newaxis, :])
+        self.correlation = near_positive_definite(self.correlation)
+
+
+        self.psimulator = GBM(maturity, drift, self.volatility, self.correlation)
+
+        qdrift = tf.cast(tf.ones_like(self.drift) * self.rate, FLOAT_DTYPE)
+        self.qsimulator = GBM(maturity, qdrift, self.volatility, self.correlation)
 
     # === abstract base class implementations
     @property
@@ -291,20 +296,13 @@ class BlackScholesPutCallBook(DerivativeBook):
                      num_steps: int,
                      risk_neutral: bool) -> tf.Tensor:
         """Implementation of sample_paths from DerivativeBook"""
-        measure_drift = tf.ones_like(self.drift) * self.rate if risk_neutral \
-            else self.drift
+        simulator = self.qsimulator if risk_neutral else self.psimulator
 
         # simulate risky paths
         instruments = init_state[:self.instrument_dim]
-        risk = simulate_geometric_brownian_motion(
-            self.maturity,
-            instruments,
-            measure_drift,
-            self.volatility,
-            self.correlation,
-            num_paths,
-            num_steps)
-
+        risk = simulator.simulate(
+            self.maturity, instruments, num_paths, num_steps)
+        risk = tf.stack(risk, -1)
 
         # simulate riskless path
         time_grid = tf.linspace(0., self.maturity, num_steps + 1)
@@ -398,12 +396,12 @@ def random_black_scholes_put_call_book(
 
     maturity = float(maturity)
     strike = uniform((book_size, ), 75, 125, FLOAT_DTYPE)
-    drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1)
-    rate = tf.random.uniform((1, ), 0.0, 0.05)
+    drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1, dtype=FLOAT_DTYPE)
+    rate = tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE)
     diffusion = tf.random.uniform(
         (instrument_dim, num_brownian_motions), 0, 0.25 / num_brownian_motions, FLOAT_DTYPE)
-    put_call = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
-    exposure = 2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1
+    put_call = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1, FLOAT_DTYPE)
+    exposure = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1, FLOAT_DTYPE)
 
     if instrument_dim  > 1:
         linker = tf.random.uniform((book_size, ), 0, instrument_dim - 1, INT_DTYPE)
@@ -436,3 +434,6 @@ def random_simple_put_call_book(maturity):
     init_state = tf.concat([init_risky, init_riskless], axis=0)
 
     return init_state, book
+
+
+
