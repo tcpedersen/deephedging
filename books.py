@@ -176,45 +176,6 @@ def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
 
     return _theta * norm_cdf(_theta * (m / v + v / 2.))
 
-# @tf.function
-# def simulate_geometric_brownian_motion(maturity: float,
-#                                        init_state: tf.Tensor,
-#                                        drift: tf.Tensor,
-#                                        volatility: tf.Tensor,
-#                                        correlation: tf.Tensor,
-#                                        num_paths: int,
-#                                        num_steps: int) -> tf.Tensor:
-#     """Simulate a multivariate GBM.
-#     Args:
-#         maturity: float
-#         init_state: (instrument_dim, )
-#         drift : (instrument_dim, )
-#         volatility: (instrument_dim, )
-#         correlation : (instrument_dim, instrument_dim)
-#         num_paths : int
-#         num_steps : int
-#     Returns:
-#         Sample paths: (num_paths, instrument_dim, num_steps + 1)
-#     """
-#     zero_mean = tf.zeros_like(drift)
-#     size = (num_paths, num_steps)
-#     scale_tril = tf.linalg.cholesky(correlation)
-#     normal = tfp.distributions.MultivariateNormalTriL
-#     rvs = normal(zero_mean, scale_tril).sample(size)
-
-#     dt = maturity / num_steps
-#     m = (drift - volatility * volatility / 2.) * dt
-#     v = volatility * math.sqrt(dt)
-#     rvs = tf.exp(m + v * rvs)
-
-#     #paths = [tf.tile(init_state[tf.newaxis, :], (num_paths, 1))]
-#     paths = [init_state]
-
-#     for idx in range(num_steps):
-#         paths.append(paths[-1] * rvs[:, idx])
-
-#     return paths
-
 
 class BlackScholesPutCallBook(DerivativeBook):
     def __init__(self,
@@ -418,6 +379,28 @@ class BlackScholesPutCallBook(DerivativeBook):
         return self.exposure[tf.newaxis, :, tf.newaxis] * gradient
 
 
+def random_black_scholes_parameters(
+        maturity: int,
+        instrument_dim: int,
+        num_brownian_motions: int,
+        seed: int):
+
+    maturity = float(maturity)
+    drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1, dtype=FLOAT_DTYPE)
+    rate = 0. # tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE) # TODO
+
+    scale = tf.sqrt(float(num_brownian_motions))
+    diffusion = tf.random.uniform(
+        (instrument_dim, num_brownian_motions),
+        0.1 / scale, 0.3 / scale, FLOAT_DTYPE)
+
+    init_risky = uniform((instrument_dim, ), 75, 125, FLOAT_DTYPE)
+    init_riskless = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
+    init_state = tf.concat([init_risky, init_riskless], axis=0)
+
+    return maturity, init_state, drift, rate, diffusion
+
+
 def random_black_scholes_put_call_book(
         maturity: float,
         book_size: int,
@@ -426,26 +409,26 @@ def random_black_scholes_put_call_book(
         seed: int):
     tf.random.set_seed(seed)
 
-    maturity = float(maturity)
+    maturity, init_state, drift, rate, diffusion = \
+        random_black_scholes_parameters(
+            maturity, instrument_dim, num_brownian_motions, seed)
+
     strike = uniform((book_size, ), 75, 125, FLOAT_DTYPE)
-    drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1, dtype=FLOAT_DTYPE)
-    rate = 0. # tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE) # TODO
-    diffusion = tf.random.uniform(
-        (instrument_dim, num_brownian_motions), 0, 0.25 / num_brownian_motions, FLOAT_DTYPE)
-    put_call = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1, FLOAT_DTYPE)
-    exposure = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(book_size) - 1, FLOAT_DTYPE)
+    put_call = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
+        book_size) - 1, FLOAT_DTYPE)
+    exposure = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
+        book_size) - 1, FLOAT_DTYPE)
 
     if instrument_dim  > 1:
-        linker = tf.random.uniform((book_size, ), 0, instrument_dim - 1, INT_DTYPE)
+        linker = tf.random.uniform((book_size, ), 0, instrument_dim - 1,
+                                   INT_DTYPE)
     else:
         linker = tf.convert_to_tensor((0, ), INT_DTYPE)
 
     book = BlackScholesPutCallBook(
         maturity, strike, drift, rate, diffusion, put_call, exposure, linker)
 
-    init_risky = uniform((instrument_dim, ), 75, 125, FLOAT_DTYPE)
-    init_riskless = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
-    init_state = tf.concat([init_risky, init_riskless], axis=0)
+
 
     return init_state, book
 

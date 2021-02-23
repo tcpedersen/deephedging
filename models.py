@@ -95,15 +95,9 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 
 
     @property
-    @abc.abstractmethod
-    def instrument_dim(self) -> int:
-        """Returns number of hedge instruments."""
-
-
-    @property
-    @abc.abstractmethod
     def num_steps(self) -> int:
         """Returns number of steps in hedge."""
+        return len(self.strategy_layers)
 
 
     @property
@@ -118,14 +112,12 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return self._cost_layers
 
 
-    @property
-    def use_gradients(self) -> bool:
-        """Returns bool indicating whether to use gradients in hedge."""
-        return self._use_gradients
+    def add_cost_layers(self, cost: float):
+        if self._cost_layers:
+            raise ValueError("cost layers already exists.")
 
-    @use_gradients.setter
-    def use_gradients(self, val):
-        self._use_gradients = bool(val)
+        for _ in range(self.num_steps):
+            self._cost_layers.append(ProportionalCost(float(cost)))
 
 
     def compile(self, risk_measure, **kwargs):
@@ -169,7 +161,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         Returns:
             (batch_size, )
         """
-        if self.cost_layers is not None:
+        if self.cost_layers:
             delta = new_hedge - old_hedge
             return self.cost_layers[step]([delta, instruments[..., step]])
 
@@ -191,10 +183,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         Returns:
             value: (batch_size, )
         """
-        if self.use_gradients:
-            information, instruments, payoff, gradients = inputs
-        else:
-            information, instruments, payoff = inputs
+        information, instruments, payoff = inputs
 
         wealth = -payoff
         hedge = tf.zeros_like(instruments[..., 0], FLOAT_DTYPE)
@@ -203,12 +192,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             observation = self.observation(step, information, hedge)
             old_hedge = hedge
             hedge = strategy(observation, training)
-
-            if self.use_gradients:
-                hedge += gradients[..., step]
-
             costs = self.costs(step, hedge, old_hedge, instruments)
-
             increment = instruments[..., step + 1] - instruments[..., step]
             wealth += tf.reduce_sum(tf.multiply(hedge, increment), 1)
             wealth -= costs
@@ -216,28 +200,18 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return wealth
 
 
+# ==============================================================================
+# === DeltaHedge
 class DeltaHedge(Hedge):
     def __init__(self, num_steps, book, **kwargs):
         super().__init__(**kwargs)
         self.book = book
-        self._num_steps = int(num_steps)
-
-        self._strategy_layers = [DeltaStrategy(book)] * self.num_steps
+        self._strategy_layers = [DeltaStrategy(book)] * num_steps
 
 
     @property
     def strategy_layers(self) -> list:
         return self._strategy_layers
-
-
-    @property
-    def instrument_dim(self) -> int:
-        return self.book.instrument_dim
-
-
-    @property
-    def num_steps(self) -> int:
-        return self._num_steps
 
 
     @property
@@ -252,26 +226,17 @@ class DeltaHedge(Hedge):
         return [step * self.dt, information[..., step]]
 
 
-class CostDeltaHedge(DeltaHedge):
-    def __init__(self, num_steps, book, cost, **kwargs):
-        super().__init__(num_steps, book, **kwargs)
-
-        for _ in range(self.num_steps):
-            self._cost_layers.append(ProportionalCost(cost))
-
-
+# ==============================================================================
+# === SimpleHedge
 class SimpleHedge(Hedge):
     def __init__(
             self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
         super().__init__(**kwargs)
 
-        self._num_steps = int(num_steps)
-        self._instrument_dim = int(instrument_dim)
-
         self._strategy_layers = []
-        for _ in range(self.num_steps):
+        for _ in range(num_steps):
             self._strategy_layers.append(DenseStrategy(
-                self.instrument_dim, num_layers, num_units))
+                instrument_dim, num_layers, num_units))
 
 
     @property
@@ -279,17 +244,6 @@ class SimpleHedge(Hedge):
         return self._strategy_layers
 
 
-    @property
-    def instrument_dim(self) -> int:
-        return self._instrument_dim
-
-
-    @property
-    def num_steps(self) -> int:
-        return self._num_steps
-
-
-    @tf.function
     def observation(self, step, information, hedge):
         return information[..., step]
 
@@ -299,15 +253,48 @@ class CostSimpleHedge(SimpleHedge):
                  **kwargs):
         super().__init__(num_steps, instrument_dim, num_layers, num_units,
                          **kwargs)
+        super().add_cost_layers(cost)
 
-        self._cost_layers = []
-        for _ in range(self.num_steps):
-            self._cost_layers.append(ProportionalCost(cost))
-
-
-    @tf.function
     def observation(self, step, information, hedge):
-        return tf.concat([information[..., step], hedge], 1)
+        non_cost = super().observation(step, information, hedge)
+        return tf.concat([non_cost, hedge], 1)
+
+
+# ==============================================================================
+# === RecurrentHedge
+class RecurrentHedge(Hedge):
+    def __init__(
+            self, num_steps, instrument_dim, num_layers, num_units, **kwargs):
+        super().__init__(**kwargs)
+
+        self._strategy_layers = [
+            DenseStrategy(
+                instrument_dim,
+                num_layers,
+                num_units)] * num_steps
+
+
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
+
+
+    def observation(self, step, information, hedge):
+        time = tf.ones_like(information[..., step], FLOAT_DTYPE) * step
+        return tf.concat([time, information[..., step]], 1)
+
+
+class CostRecurrentHedge(RecurrentHedge):
+    def __init__(self, num_steps, instrument_dim, num_layers, num_units, cost,
+                 **kwargs):
+        super().__init__(num_steps, instrument_dim, num_layers, num_units,
+                         **kwargs)
+        super().add_cost_layers(cost)
+
+    def observation(self, step, information, hedge):
+        non_cost = super().observation(step, information, hedge)
+        return tf.concat([non_cost, hedge], 1)
+
 
 # =============================================================================
 # ===

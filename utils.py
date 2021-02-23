@@ -55,8 +55,13 @@ class MeanVarianceNormaliser:
         Args:
             x: (batch_size, information_dim, num_steps + 1)
         '''
-        self.mean = tf.reduce_mean(x, 0)
-        self.std = tf.math.reduce_std(x, 0)
+
+        # major numerical overflow when sum exceeds dtype max in reduce_mean,
+        # so convert to np.float64 before calculating moments.
+        self.mean, self.variance = tf.cast(
+            tf.nn.moments(tf.cast(x, np.float64), 0), FLOAT_DTYPE)
+
+        self.eps = FLOAT_DTYPE_EPS
 
     def transform(self, x):
         '''Normalize data.
@@ -65,8 +70,9 @@ class MeanVarianceNormaliser:
         Returns:
             y: same as input.
         '''
-        y = (x - self.mean) / self.std
-        return tf.where(tf.equal(self.std, 0)[tf.newaxis, ...], 0., y)
+        y = tf.nn.batch_normalization(
+            x, self.mean, self.variance, None, None, self.eps)
+        return tf.where(tf.equal(self.variance, 0), 0., y)
 
     def fit_transform(self, x):
         self.fit(x)
@@ -79,5 +85,5 @@ class MeanVarianceNormaliser:
         Returns:
             x: same as input.
         '''
-        x = self.std * y + self.mean
-        return tf.where(tf.equal(self.std, 0.), self.mean, x)
+        x = tf.sqrt(self.variance + self.eps) * y + self.mean
+        return tf.where(tf.equal(self.variance, 0.), self.mean, x)

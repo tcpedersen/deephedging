@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, LearningRateScheduler
 
-from models import SimpleHedge, DeltaHedge, EntropicRisk, ExpectedShortfall, CostSimpleHedge, CostDeltaHedge
+import models
 from books import random_simple_put_call_book, random_black_scholes_put_call_book
 from constants import FLOAT_DTYPE
 from utils import PeakSchedule, MeanVarianceNormaliser
@@ -25,8 +25,8 @@ def train_model(model, inputs, alpha, normalise=True):
     norm_inputs = [norm_information, inputs[1], inputs[2]]
 
     # compile model
-    risk_measure = ExpectedShortfall(alpha)
-    optimizer = tf.keras.optimizers.Adam()
+    risk_measure = models.ExpectedShortfall(alpha)
+    optimizer = tf.keras.optimizers.Adam(1e-1)
     model.compile(risk_measure, optimizer=optimizer)
 
     # define callbacks
@@ -104,15 +104,19 @@ time, train_samples = book.sample_paths(
 # === train simple model
 train = split_sample(train_samples)
 
-simple_model = CostSimpleHedge(num_steps, book.instrument_dim, 2, 15, cost)
-_, _, normaliser = train_model(simple_model, train, alpha)
+simple_model = models.CostRecurrentHedge(
+    num_steps, book.instrument_dim, 2, 15, cost)
+history, norm_train, normaliser = train_model(simple_model, train, alpha)
 
 
 # ==============================================================================
 # === train benchmark
 benchmark = [train[1], train[1], train[2]]
 
-benchmark_model = CostDeltaHedge(num_steps, book, cost)
+benchmark_model = models.DeltaHedge(num_steps, book)
+if cost is not None:
+    benchmark_model.add_cost_layers(cost)
+
 _, _, _ = train_model(benchmark_model, benchmark, alpha, False)
 
 
@@ -120,13 +124,9 @@ _, _, _ = train_model(benchmark_model, benchmark, alpha, False)
 # === train no liability
 no_liability = [train[0], train[1], tf.zeros_like(train[2])]
 
-no_liability_model = CostSimpleHedge(num_steps, book.instrument_dim, 2, 15, cost)
+no_liability_model = models.CostRecurrentHedge(
+    num_steps, book.instrument_dim, 2, 15, cost)
 _, _, _ = train_model(no_liability_model, no_liability, alpha)
-
-
-# ==============================================================================
-# === delete train data
-del train_samples, train
 
 
 # ==============================================================================
@@ -181,3 +181,23 @@ print(f"no liability total risk: {no_liability_risk - no_liability_price:5f}")
 plot_distributions([simple_model, benchmark_model],
                    [norm_test, norm_benchmark],
                    [simple_model_price, benchmark_price])
+
+
+
+
+
+
+
+num_train_paths = int(10**6)
+num_steps = 7
+
+init_state, book = random_black_scholes_put_call_book(
+    num_steps / 250, 25, 10, 10, 69)
+time, train_samples = book.sample_paths(
+    init_state, num_train_paths, num_steps, False)
+
+x = tf.math.log(train_samples / train_samples[..., 0, tf.newaxis])
+
+mean, variance = tf.nn.moments(x, 0)
+xn = tf.nn.batch_normalization(x, mean, variance, None, None, FLOAT_DTYPE_EPS)
+tf.nn.moments(xn, 0)
