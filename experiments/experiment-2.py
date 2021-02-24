@@ -80,7 +80,7 @@ def plot_distributions(models, inputs, prices):
     plt.figure()
     for model, input, price in zip(models, inputs, prices):
         data = price + model(input)
-        plot_data = np.random.choice(data, 250000)
+        plot_data = np.random.choice(data, 250000, replace=False)
         plt.hist(plot_data, bins=250, density=True, alpha=0.5)
     plt.show()
 
@@ -90,6 +90,7 @@ def plot_distributions(models, inputs, prices):
 num_train_paths, num_test_paths, num_steps = int(10**6), int(10**6), 7
 alpha = 0.95
 cost = 1. / 100
+num_layers, num_units = 2, 15
 
 
 # ==============================================================================
@@ -104,8 +105,8 @@ time, train_samples = book.sample_paths(
 # === train simple model
 train = split_sample(train_samples)
 
-simple_model = models.CostRecurrentHedge(
-    num_steps, book.instrument_dim, 2, 15, cost)
+simple_model = models.CostSimpleHedge(
+    num_steps, book.instrument_dim, num_layers, num_units, cost)
 history, norm_train, normaliser = train_model(simple_model, train, alpha)
 
 
@@ -124,8 +125,8 @@ _, _, _ = train_model(benchmark_model, benchmark, alpha, False)
 # === train no liability
 no_liability = [train[0], train[1], tf.zeros_like(train[2])]
 
-no_liability_model = models.CostRecurrentHedge(
-    num_steps, book.instrument_dim, 2, 15, cost)
+no_liability_model = models.CostSimpleHedge(
+    num_steps, book.instrument_dim, num_layers, num_units, cost)
 _, _, _ = train_model(no_liability_model, no_liability, alpha)
 
 
@@ -181,23 +182,3 @@ print(f"no liability total risk: {no_liability_risk - no_liability_price:5f}")
 plot_distributions([simple_model, benchmark_model],
                    [norm_test, norm_benchmark],
                    [simple_model_price, benchmark_price])
-
-
-
-
-
-
-
-num_train_paths = int(10**6)
-num_steps = 7
-
-init_state, book = random_black_scholes_put_call_book(
-    num_steps / 250, 25, 10, 10, 69)
-time, train_samples = book.sample_paths(
-    init_state, num_train_paths, num_steps, False)
-
-x = tf.math.log(train_samples / train_samples[..., 0, tf.newaxis])
-
-mean, variance = tf.nn.moments(x, 0)
-xn = tf.nn.batch_normalization(x, mean, variance, None, None, FLOAT_DTYPE_EPS)
-tf.nn.moments(xn, 0)

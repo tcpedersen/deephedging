@@ -2,403 +2,248 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
 import abc
-import math
 
 from tensorflow.random import uniform
 
 from utils import norm_cdf, near_positive_definite
 from constants import FLOAT_DTYPE, INT_DTYPE, FLOAT_DTYPE_EPS
-from simulators import GBM, ConstantBankAccount
+from simulators import Simulator, GBM, ConstantBankAccount
+
+# ==============================================================================
+# === Derivatives
+class Derivative(abc.ABC):
+    @abc.abstractmethod
+    def payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
+        """Computes payoff of derivative in terms of numeraire for each sample
+        in batch
+        Args:
+            instrument: (batch_size, time_steps + 1)
+            numeraire: (time_steps + 1, )
+        Returns:
+            payoff: (batch_size, )
+        """
+
+
+    @abc.abstractmethod
+    def value(self, time: tf.Tensor, instrument: tf.Tensor,
+              numeraire: tf.Tensor):
+        """Computes price of derivative in terms of numeraire for each sample
+        in batch.
+        Args:
+            time: (time_steps + 1, )
+            instrument: (batch_size, time_steps + 1)
+            numeraire: (time_steps + 1, )
+        Returns:
+            value: (batch_size, time_steps + 1)
+        """
+
+
+    @abc.abstractmethod
+    def delta(self, time: tf.Tensor, instrument: tf.Tensor,
+              numeraire: tf.Tensor):
+        """Computes the delta of the derivative in terms of numeraire for each
+        sample in batch.
+        Args:
+            time: (time_steps + 1, )
+            instrument: (batch_size, time_steps + 1)
+            numeraire: (time_steps + 1, )
+        Returns:
+            delta: (batch_size, time_steps + 1)
+        """
+
+
+class PutCall(Derivative):
+    def __init__(self, strike: float, rate: float, volatility: float, theta: float):
+        self.strike = tf.convert_to_tensor(strike, FLOAT_DTYPE)
+        self.rate = float(rate)
+        self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
+        self.theta = tf.convert_to_tensor(theta, FLOAT_DTYPE)
+
+
+    def payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
+        diff = self.theta * (instrument[..., -1] - self.strike)
+        itm = tf.cast(diff > 0, FLOAT_DTYPE)
+
+        return (diff * itm) / numeraire[-1]
+
+
+    def value(self, time: tf.Tensor, instrument: tf.Tensor,
+              numeraire: tf.Tensor):
+        ttm = time[-1] - time
+        raw_price = black_price(ttm, instrument, self.strike,
+                                self.rate, self.volatility, self.theta)
+
+        return raw_price / numeraire
+
+
+    def delta(self, time: tf.Tensor, instrument: tf.Tensor,
+              numeraire: tf.Tensor):
+        ttm = time[-1] - time
+        raw_delta = black_delta(ttm, instrument, self.strike,
+                                self.rate, self.volatility, self.theta)
+
+        return raw_delta / numeraire
+
 
 # ==============================================================================
 # === Base
-class DerivativeBook(abc.ABC):
-    @property
-    @abc.abstractmethod
-    def book_size(self) -> int:
-        """Number of derivatives in the book."""
-
-
-    @property
-    @abc.abstractmethod
-    def instrument_dim(self) -> int:
-        """Number of underlying risky instruments processes."""
-
-
-    @property
-    @abc.abstractmethod
-    def non_instrument_dim(self) -> int:
-        """Number of underlying non-instruments processes."""
-
-
-    @property
-    def state_dim(self) -> int:
-        """Returns the dimensionalility of the state."""
-        return self.instrument_dim + 1 + self.non_instrument_dim
-
-
-    def _force_state_shape(self, state: tf.Tensor) -> tf.Tensor:
-        """Reformats input based on dimensionality.
-        Args:
-            state: state_like
-        Returns:
-            state: (num_samples, state_dim, num_steps + 1)
-        """
-        state = tf.convert_to_tensor(state, FLOAT_DTYPE)
-
-        dimension = len(state.shape)
-        if dimension == 1:
-            return state[tf.newaxis, :, tf.newaxis]
-        elif dimension == 2:
-            return state[:, :, tf.newaxis]
-        elif dimension == 3:
-            return state
-        else:
-            raise ValueError(f"dimensionality {dimension} > 3.")
-
-
-    def payoff(self, state: tf.Tensor) -> tf.Tensor:
-        """Wrapper for DerivativeBook.payoff."""
-        return self._payoff(self._force_state_shape(state))
-
-
-    @abc.abstractmethod
-    def _payoff(self, state: tf.Tensor) -> tf.Tensor:
-        """Compute payoff from terminal state.
-        Args:
-            state: (num_samples, state_dim, num_steps + 1)
-        Returns:
-            payoff: (num_samples, )
-        """
-
-
-    def book_value(self, state: tf.Tensor, time:float) -> tf.Tensor:
-        """Wrapper for DerivativeBook._book_value."""
-        return self._book_value(self._force_state_shape(state), time)
-
-
-    @abc.abstractmethod
-    def _book_value(self, state: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
-        """Compute value of book at each point in time.
-        Args:
-            state: (num_samples, state_dim, num_steps + 1)
-            time: (num_steps + 1, )
-        Returns:
-            value: (num_samples, num_steps + 1)
-        """
-
-
-    @abc.abstractmethod
-    def sample_paths(self,
-                     init_state: tf.Tensor,
-                     num_paths: int,
-                     num_steps: int,
-                     risk_neutral: bool) -> tf.Tensor:
-        """Simulate sample paths of risky assets.
-        Args:
-            init_state: (state_dim, )
-            num_paths: int
-            num_steps: int
-            risk_neutral: bool
-        Returns:
-            time: (num_steps + 1, )
-            sample paths: (num_samples, state_dim, num_steps + 1)
-        """
-
-
-    def gradient_paths(self, init_state, num_paths, num_steps):
-        """Simulates paths, gradients and payoffs.
-        Args:
-            init_state: (state_dim, )
-            num_paths: int
-            num_steps: int
-        Returns:
-            time: (num_steps + 1, )
-            paths: (num_samples, state_dim, num_steps + 1)
-            grads: (num_samples, num_steps + 1)
-            payoff: (num_samples, )
-        """
-        with tf.GradientTape(watch_accessed_variables=False) as tape:
-            tape.watch(init_state)
-            time, paths = self.sample_paths(init_state, num_paths, num_steps, True)
-            payoff = self.payoff(paths)
-            price = tf.reduce_mean(payoff)
-        grads = tape.batch_jacobian(price, paths)
-
-        return time, paths, grads, payoff
-
-
-# ==============================================================================
-# === Black Scholes
-def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
-    """Returns price in Black's model.
-    Args:
-        time_to_maturity: (num_steps + 1, )
-        spot: (num_samples, book_size, num_steps + 1)
-        strike: (book_size, )
-        rate: float
-        volatility: (book_size, )
-        theta: (book_size, )
-    Returns:
-        price: (num_samples, book_size, num_steps + 1)
-    """
-    _strike = strike[tf.newaxis, :, tf.newaxis]
-    _theta = theta[tf.newaxis, :, tf.newaxis]
-
-    deflator = tf.math.exp(-rate * time_to_maturity)
-    forward = spot / deflator
-    m = tf.math.log(forward / _strike)
-    v = volatility[tf.newaxis, :, tf.newaxis] * tf.math.sqrt(time_to_maturity)
-    m_over_v = m / v
-    v_over_2 = v / 2.
-
-    value = deflator * _theta \
-            * (forward * norm_cdf(_theta * (m_over_v + v_over_2)) \
-               - _strike * norm_cdf(_theta * (m_over_v - v_over_2)))
-
-    return value
-
-
-def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
-    """Returns delta in Black's model.
-    Args:
-        see black_price
-    Returns:
-        delta: (num_samples, book_size, num_steps + 1)
-    """
-    _strike = strike[tf.newaxis, :, tf.newaxis]
-    _theta = theta[tf.newaxis, :, tf.newaxis]
-
-    deflator = tf.math.exp(-rate * time_to_maturity)
-    forward = spot / deflator
-    m = tf.math.log(forward / _strike)
-    v = volatility[tf.newaxis, :, tf.newaxis] * tf.math.sqrt(time_to_maturity)
-
-    return _theta * norm_cdf(_theta * (m / v + v / 2.))
-
-
-class BlackScholesPutCallBook(DerivativeBook):
+class DerivativeBook(object):
     def __init__(self,
                  maturity: float,
-                 strike: tf.Tensor,
-                 drift: tf.Tensor,
-                 rate: float,
-                 diffusion: tf.Tensor,
-                 put_call: tf.Tensor,
-                 exposure: tf.Tensor,
-                 linker: tf.Tensor) -> None:
-        """ Initialisation of BlackScholesPutCallBook
-        Args:
-            maturity: float
-            strike: (book_size, )
-            drift: (instrument_dim, )
-            rate: float
-            diffusion: (instrument_dim, num_brownian_motions)
-            put_call: 1 or -1 for call / put (book_size, )
-            exposure: n or -n for long / short (book_size, )
-            linker: {0, ..., instrument_dim-1} indicates what asset the
-                strike is associated with (book_size, )
-        """
+                 instrument_simulator: Simulator,
+                 numeraire_simulator: Simulator):
         self.maturity = float(maturity)
-        self.strike = tf.convert_to_tensor(strike, FLOAT_DTYPE)
-        self.drift = tf.convert_to_tensor(drift, FLOAT_DTYPE)
-        self.rate = float(rate)
-        self.diffusion = tf.convert_to_tensor(diffusion, FLOAT_DTYPE)
-        self.put_call = tf.convert_to_tensor(put_call, FLOAT_DTYPE)
-        self.exposure = tf.convert_to_tensor(exposure, FLOAT_DTYPE)
-        self.linker = tf.convert_to_tensor(linker, INT_DTYPE)
+        for simulator in [instrument_simulator, numeraire_simulator]:
+            assert issubclass(type(simulator), Simulator)
 
+        self.instrument_simulator = instrument_simulator
+        self.numeraire_simulator = numeraire_simulator
 
-        self.volatility = tf.linalg.norm(self.diffusion, axis=1)
-        self.correlation = (self.diffusion @ tf.transpose(self.diffusion)) \
-            / (self.volatility[:, tf.newaxis] @ self.volatility[tf.newaxis, :])
-        self.correlation = near_positive_definite(self.correlation)
-
-        self.bank_simulator = ConstantBankAccount(self.rate)
-        self.psimulator = GBM(maturity, drift, self.volatility, self.correlation)
-
-        qdrift = tf.cast(tf.ones_like(self.drift) * self.rate, FLOAT_DTYPE)
-        self.qsimulator = GBM(maturity, qdrift, self.volatility, self.correlation)
-
-    # === abstract base class implementations
-    @property
-    def book_size(self):
-        return len(self.strike)
+        self.derivatives = []
 
 
     @property
-    def instrument_dim(self):
-        return len(self.drift)
+    def book_size(self) -> int:
+        """Number of derivatives in the book."""
+        return len(self.derivatives)
 
 
     @property
-    def non_instrument_dim(self):
-        return 0
+    def instrument_dim(self) -> int:
+        """Number of underlying risky instruments processes."""
+        return self.instrument_simulator.dimension
 
 
-    def _payoff(self, state: tf.Tensor) -> tf.Tensor:
-        """Implementation of DerivativeBook._payoff."""
-        instruments = self._get_instruments(state)[..., -1]
-        diff = self.put_call * (tf.gather(instruments, self.linker, axis=1) - self.strike)
-        itm = tf.cast(diff > 0, FLOAT_DTYPE)
-        return tf.squeeze((diff * itm) @ self.exposure[:, tf.newaxis])
+    def add_derivative(self, derivative: Derivative, link: int, exposure: float):
+        assert issubclass(type(derivative), Derivative)
+        assert 0 <= int(link) < self.instrument_dim
+
+        entry = {
+            "derivative": derivative,
+            "link": int(link),
+            "exposure": float(exposure)
+            }
+
+        self.derivatives.append(entry)
 
 
-    def _book_value(self, state: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
-        """Implementation of DerivativeBook.book_value."""
-        instruments = self._get_instruments(state)
-        values = self._marginal_book_value(instruments, time)
-        return tf.reduce_sum(values, axis=1)
-
-
-    def sample_paths(self,
-                     init_state: tf.Tensor,
-                     num_paths: int,
-                     num_steps: int,
-                     risk_neutral: bool) -> tf.Tensor:
-        """Implementation of sample_paths from DerivativeBook"""
-        simulator = self.qsimulator if risk_neutral else self.psimulator
-
-        # simulate risky paths
-        instruments = init_state[:self.instrument_dim]
-        risk = simulator.simulate(
-            self.maturity, instruments, num_paths, num_steps)
-        risk = tf.stack(risk, -1)
-
-        # simulate riskless path
-        time = tf.linspace(0., self.maturity, num_steps + 1)
-        single_path = init_state[self.instrument_dim] \
-            * tf.exp(self.rate * time)
-        riskless = tf.tile(single_path[tf.newaxis, :], (num_paths, 1))
-
-        return time, tf.concat((risk, riskless[:, tf.newaxis, :]), axis=1)
-
-
-    def gradient_sample(self, init_state, batch_size, num_steps, risk_neutral):
-        """???
+    def payoff(self, instruments: tf.Tensor, numeraire: tf.Tensor):
+        """Computes payoff of book in terms of numeraire for each sample
+        in batch
         Args:
-            ...
+            instruments: (batch_size, instrument_dim, time_steps + 1)
+            numeraire: (time_steps + 1, )
         Returns:
-            time, paths, grads, payoff
+            payoff: (batch_size, )
         """
-        time = tf.linspace(0., self.maturity, num_steps + 1)
-        simulator = self.qsimulator if risk_neutral else self.psimulator
+        payoff = tf.zeros_like(instruments[:, 0, 0], FLOAT_DTYPE)
+        for entry in self.derivatives:
+            linked = instruments[:, entry["link"], :]
+            marginal = entry["derivative"].payoff(linked, numeraire)
+            payoff += marginal * entry["exposure"]
 
-        with tf.GradientTape() as tape:
-            tape.watch(init_state)
-
-            numeraire = init_state[tf.newaxis, -1]
-            instruments = init_state[:self.instrument_dim]
-
-            numeraire_paths = self.bank_simulator.simulate(
-                self.maturity, numeraire, batch_size, num_steps)
-            instruments_paths = simulator.simulate(
-                self.maturity, instruments, batch_size, num_steps)
-
-            payoff = self.payoff(instruments_paths[-1]) / numeraire_paths[-1][:, 0]
-
-        grads = tape.batch_jacobian(payoff, [instruments_paths, numeraire_paths])
-
-        paths = tf.concat(
-            [tf.stack(instruments_paths, -1), tf.stack(numeraire_paths, -1)], 1)
-        grads = tf.concat([tf.stack(grads[0], -1), tf.stack(grads[1], -1)], 1)
-
-        return time, paths, grads, payoff
+        return payoff
 
 
-    # === other
-    def _get_instruments(self, state: tf.Tensor) -> tf.Tensor:
-        """Extract instruments assets from state.
+    def value(self, time: tf.Tensor, instruments: tf.Tensor,
+              numeraire: tf.Tensor):
+        """Computes value of book in terms of numeraire for each sample
+        in batch.
         Args:
-            state: see DerivativeBook._force_state_shape
+            time: (time_steps + 1, )
+            instrument: (batch_size, instrument_dim, time_steps + 1)
+            numeraire: (time_steps + 1, )
         Returns:
-            instruments: (num_samples, instrument_dim, num_steps + 1)
+            value: (batch_size, time_steps + 1)
         """
-        return state[:, :self.instrument_dim, :]
+        value = tf.zeros_like(instruments[:, 0, :], FLOAT_DTYPE)
+        for entry in self.derivatives:
+            linked = instruments[:, entry["link"], :]
+            marginal = entry["derivative"].value(time, linked, numeraire)
+            value += marginal * entry["exposure"]
+
+        return value
 
 
-    def _marginal_book_value(
-            self, instruments: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
-        """Computes value of each individual option.
-            Args:
-                instruments: see _get_instruments.
-                time: (num_steps + 1, )
-            Returns:
-                prices: (num_samples, book_size, num_steps + 1)
-
-        """
-        value = black_price(
-            self.maturity - time,
-            tf.gather(instruments, self.linker, axis=1),
-            self.strike,
-            self.rate,
-            tf.gather(self.volatility, self.linker),
-            self.put_call
-            )
-
-        return self.exposure[tf.newaxis, :, tf.newaxis] * value
-
-
-    def book_delta(self, state: tf.Tensor, time: float) -> tf.Tensor:
-        """Computes gradient of book wrt. underlying instruments
+    def delta(self, time: tf.Tensor, instruments: tf.Tensor,
+              numeraire: tf.Tensor):
+        """Computes value of book in terms of numeraire for each sample
+        in batch.
         Args:
-            see DerivativeBook._book_value
+            time: (time_steps + 1, )
+            instruments: (batch_size, instrument_dim, time_steps + 1)
+            numeraire: (time_steps + 1, )
         Returns:
-            gradient: (num_samples, instrument_dim, num_steps + 1)
+            value: (batch_size, instrument_dim, time_steps + 1)
         """
-        state = super()._force_state_shape(state)
-        instruments = self._get_instruments(state)
-        gradient = self._marginal_book_delta(instruments, time)
+        marginals = []
+        for entry in self.derivatives:
+            linked = instruments[:, entry["link"], :]
+            marginal = entry["derivative"].delta(time, linked, numeraire)
+            marginals.append(marginal * entry["exposure"])
+
+        marginals = tf.stack(marginals, axis=1)
+        links = [entry["link"] for entry in self.derivatives]
 
         v = []
-        for k in range(self.instrument_dim):
-            mask = tf.where(self.linker == k)[:, 0]
+        for k in tf.range(self.instrument_dim):
+            mask = tf.squeeze(tf.where(links == k), axis=1)
             v.append(tf.reduce_sum(
-                tf.gather(gradient, mask, axis=1), axis=1, keepdims=True))
+                tf.gather(marginals, mask, axis=1), axis=1, keepdims=True))
 
         return tf.concat(v, axis=1)
 
 
-    def _marginal_book_delta(
-            self, instruments: tf.Tensor, time: tf.Tensor) -> tf.Tensor:
-        """Computes delta of each individual option.
-            Args:
-                see _marginal_book_value
-            Returns:
-                gradient: (num_samples, book_size, num_steps + 1)
+    @abc.abstractmethod
+    def sample_paths(self,
+                     init_instruments: tf.Tensor,
+                     init_numeraire: tf.Tensor,
+                     batch_size: int,
+                     time_steps: int,
+                     risk_neutral: bool) -> tf.Tensor:
+        """Simulate sample paths.
+        Args:
+            init_instruments: (state_dim, )
+            init_numeraire: (1, )
+            batch_size: int
+            time_steps: int
+            risk_neutral: bool
+        Returns:
+            time: (time_steps + 1, )
+            instruments: (batch_size, instrument_dim, time_steps + 1)
+            numeraire: (time_steps + 1, )
         """
-        gradient = black_delta(
-            self.maturity - time,
-            tf.gather(instruments, self.linker, axis=1),
-            self.strike,
-            self.rate,
-            tf.gather(self.volatility, self.linker),
-            self.put_call
-            )
+        time = tf.cast(tf.linspace(0., self.maturity, time_steps + 1), FLOAT_DTYPE)
+        instruments = self.instrument_simulator.simulate(
+            time, init_instruments, batch_size, risk_neutral)
+        numeraire = self.numeraire_simulator.simulate(
+            time, init_numeraire, 1, risk_neutral)
 
-        return self.exposure[tf.newaxis, :, tf.newaxis] * gradient
+        return time, instruments, tf.squeeze(numeraire)
 
 
+# =============================================================================
+# === random
 def random_black_scholes_parameters(
         maturity: int,
         instrument_dim: int,
         num_brownian_motions: int,
         seed: int):
+    tf.random.set_seed(seed)
 
     maturity = float(maturity)
     drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1, dtype=FLOAT_DTYPE)
-    rate = 0. # tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE) # TODO
+    rate = tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE)
 
-    scale = tf.sqrt(float(num_brownian_motions))
+    scale = tf.cast(tf.sqrt(float(num_brownian_motions)), FLOAT_DTYPE)
     diffusion = tf.random.uniform(
         (instrument_dim, num_brownian_motions),
         0.1 / scale, 0.3 / scale, FLOAT_DTYPE)
 
-    init_risky = uniform((instrument_dim, ), 75, 125, FLOAT_DTYPE)
-    init_riskless = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
-    init_state = tf.concat([init_risky, init_riskless], axis=0)
+    init_instruments = uniform((instrument_dim, ), 75, 125, FLOAT_DTYPE)
+    init_numeraire = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
 
-    return maturity, init_state, drift, rate, diffusion
+    return init_instruments, init_numeraire, drift, rate, diffusion
 
 
 def random_black_scholes_put_call_book(
@@ -407,11 +252,13 @@ def random_black_scholes_put_call_book(
         instrument_dim: int,
         num_brownian_motions: int,
         seed: int):
-    tf.random.set_seed(seed)
 
-    maturity, init_state, drift, rate, diffusion = \
+    init_instruments, init_numeraire, drift, rate, diffusion = \
         random_black_scholes_parameters(
             maturity, instrument_dim, num_brownian_motions, seed)
+
+    instrument_simulator = GBM(rate, drift, diffusion)
+    numeraire_simulator = ConstantBankAccount(rate)
 
     strike = uniform((book_size, ), 75, 125, FLOAT_DTYPE)
     put_call = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
@@ -425,27 +272,57 @@ def random_black_scholes_put_call_book(
     else:
         linker = tf.convert_to_tensor((0, ), INT_DTYPE)
 
-    book = BlackScholesPutCallBook(
-        maturity, strike, drift, rate, diffusion, put_call, exposure, linker)
+    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
+    for idx, link in enumerate(linker):
+        vol = instrument_simulator.volatility[link]
+        derivative = PutCall(strike[idx], rate, vol, put_call[idx])
+        book.add_derivative(derivative, link, exposure[idx])
 
-
-
-    return init_state, book
+    return init_instruments, init_numeraire, book
 
 
 def random_simple_put_call_book(maturity):
-    strike = init_risky = tf.convert_to_tensor([1], FLOAT_DTYPE)
-    drift = tf.convert_to_tensor([0.0], FLOAT_DTYPE)
-    rate = 0.0
-    diffusion = tf.convert_to_tensor([[0.2]], FLOAT_DTYPE)
-    put_call = tf.convert_to_tensor([1], FLOAT_DTYPE)
-    exposure = tf.convert_to_tensor([1], FLOAT_DTYPE)
-    linker = tf.convert_to_tensor([0], INT_DTYPE)
+    return random_black_scholes_put_call_book(maturity, 1, 1, 1, 69)
 
-    book = BlackScholesPutCallBook(
-        maturity, strike, drift, rate, diffusion, put_call, exposure, linker)
 
-    init_riskless = tf.convert_to_tensor([1], FLOAT_DTYPE)
-    init_state = tf.concat([init_risky, init_riskless], axis=0)
+# ==============================================================================
+# === Black Scholes
+def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
+    """Returns price in Black's model.
+    Args:
+        time_to_maturity: (time_steps + 1, )
+        spot: (batch_size, time_steps + 1)
+        strike: float
+        rate: float
+        volatility: float
+        theta: float
+    Returns:
+        price: (batch_size, time_steps + 1)
+    """
+    deflator = tf.math.exp(-rate * time_to_maturity)
+    forward = spot / deflator
+    m = tf.math.log(forward / strike)
+    v = volatility * tf.math.sqrt(time_to_maturity)
+    m_over_v = m / v
+    v_over_2 = v / 2.
 
-    return init_state, book
+    value = deflator * theta \
+            * (forward * norm_cdf(theta * (m_over_v + v_over_2)) \
+               - strike * norm_cdf(theta * (m_over_v - v_over_2)))
+
+    return value
+
+
+def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
+    """Returns delta in Black's model.
+    Args:
+        see black_price
+    Returns:
+        delta: (batch_size, time_steps + 1)
+    """
+    deflator = tf.math.exp(-rate * time_to_maturity)
+    forward = spot / deflator
+    m = tf.math.log(forward / strike)
+    v = volatility * tf.math.sqrt(time_to_maturity)
+
+    return theta * norm_cdf(theta * (m / v + v / 2.))

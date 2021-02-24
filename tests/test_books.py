@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import tensorflow as tf
-import math
 
 from unittest import TestCase
 from numpy.testing import assert_array_almost_equal
 from tensorflow.debugging import assert_near
 
-from books import black_price, black_delta, random_black_scholes_put_call_book, random_simple_put_call_book
-
+from books import black_price, black_delta, \
+    random_black_scholes_put_call_book, DerivativeBook, PutCall
+from simulators import GBM, ConstantBankAccount
 from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 
 # ==============================================================================
@@ -16,7 +16,7 @@ from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 class test_black(TestCase):
     def get_formatted_params(self, time, spot, strike, rate, volatility, theta):
         params = [time,
-                  np.array([spot], NP_FLOAT_DTYPE),
+                  np.array([[spot]], NP_FLOAT_DTYPE),
                   np.array([strike], NP_FLOAT_DTYPE),
                   rate,
                   np.array([volatility], NP_FLOAT_DTYPE),
@@ -29,8 +29,8 @@ class test_black(TestCase):
         time, spot, strike, rate, volatility, theta = 0.25, 110., 90., 0.05, 0.2, 1
         params = self.get_formatted_params(time, spot, strike, rate, volatility, theta)
 
-        price_expected = np.array([[[21.1765104079965]]])
-        delta_expected = np.array([[[0.985434416336097]]])
+        price_expected = np.array([[21.1765104079965]])
+        delta_expected = np.array([[0.985434416336097]])
 
         price_result = black_price(*params)
         delta_result = black_delta(*params)
@@ -43,8 +43,8 @@ class test_black(TestCase):
         time, spot, strike, rate, volatility, theta = 0.0, 110., 90., 0.05, 0.2, 1
         params = self.get_formatted_params(time, spot, strike, rate, volatility, theta)
 
-        price_expected = np.array([[[max(spot - strike, 0)]]], NP_FLOAT_DTYPE)
-        delta_expected = np.array([[[(spot - strike) > 0]]], NP_FLOAT_DTYPE)
+        price_expected = np.array([[max(spot - strike, 0)]], NP_FLOAT_DTYPE)
+        delta_expected = np.array([[(spot - strike) > 0]], NP_FLOAT_DTYPE)
 
         price_result = black_price(*params)
         delta_result = black_delta(*params)
@@ -54,11 +54,13 @@ class test_black(TestCase):
 
 
     def test_black_put_at_maturity(self):
-        time, spot, strike, rate, volatility, theta = 0.0, 110., 90., 0.05, 0.2, -1
-        params = self.get_formatted_params(time, spot, strike, rate, volatility, theta)
+        time, spot, strike, rate, volatility, theta = \
+            0.0, 110., 90., 0.05, 0.2, -1
+        params = self.get_formatted_params(
+            time, spot, strike, rate, volatility, theta)
 
-        price_expected = np.array([[[max(strike - spot, 0)]]], NP_FLOAT_DTYPE)
-        delta_expected = np.array([[[(strike - spot) > 0]]], NP_FLOAT_DTYPE)
+        price_expected = np.array([[max(strike - spot, 0)]], NP_FLOAT_DTYPE)
+        delta_expected = np.array([[(strike - spot) > 0]], NP_FLOAT_DTYPE)
 
         price_result = black_price(*params)
         delta_result = black_delta(*params)
@@ -67,107 +69,113 @@ class test_black(TestCase):
         assert_array_almost_equal(delta_result, delta_expected)
 
 
-# class test_geometric_brownian_motion(TestCase):
-#     def test_derivatives(self):
-#         batch_size, num_steps = 1, 5
-#         init_state, book = random_black_scholes_put_call_book(1.25, 1, 1, 1, 99)
-
-#         with tf.GradientTape() as tape:
-#             tape.watch(init_state)
-#             samples = book.sample_paths(
-#                 init_state, batch_size, num_steps, True)
-
-#             # instruments = book._get_instruments(samples)[..., -1]
-#             # diff = book.put_call * (tf.gather(instruments, book.linker, axis=1) - book.strike)
-#             # itm = tf.cast(diff > 0, FLOAT_DTYPE)
-#             # payoff = tf.squeeze((diff * itm) @ book.exposure[:, tf.newaxis])
-
-
-#             # payoff = book.payoff(samples)
-#             price = samples[-1]
-#         grads = tape.gradient(price, samples)
-
 # ==============================================================================
 # === BlackScholesPutCallBook
 class test_BlackScholesPutCallBook(TestCase):
-    def lazy_marginal(self, samples, time, book):
-        num_samples = samples.shape[0]
+    def lazy_marginal(self, instruments, numeraire, time, book):
+        num_samples = instruments.shape[0]
         book_size = book.book_size
         num_steps = len(time) - 1
 
-        marginal_prices = np.zeros((num_samples, book_size, num_steps + 1), NP_FLOAT_DTYPE)
-        marginal_deltas = np.zeros((num_samples, book_size, num_steps + 1), NP_FLOAT_DTYPE)
+        marginal_prices = np.zeros((num_samples, book_size, num_steps + 1),
+                                   NP_FLOAT_DTYPE)
+        marginal_deltas = np.zeros((num_samples, book_size, num_steps + 1),
+                                   NP_FLOAT_DTYPE)
 
         for path_idx in range(num_samples):
             for book_idx in range(book_size):
                 for time_idx in range(num_steps + 1):
-                    params = [book.maturity - time[time_idx, tf.newaxis],
-                              samples[path_idx, book.linker[book_idx], time_idx],
-                              book.strike[book_idx, tf.newaxis],
-                              book.rate,
-                              book.volatility[book.linker[book_idx], tf.newaxis],
-                              book.put_call[book_idx, tf.newaxis]
+                    entry = book.derivatives[book_idx]
+                    params = [book.maturity - time[time_idx],
+                              instruments[path_idx, entry["link"], time_idx],
+                              entry["derivative"].strike,
+                              entry["derivative"].rate,
+                              entry["derivative"].volatility,
+                              entry["derivative"].theta
                           ]
 
-                    sign = book.exposure[book_idx]
-                    marginal_prices[path_idx, book_idx, time_idx] = sign * tf.squeeze(black_price(*params))
-                    marginal_deltas[path_idx, book_idx, time_idx] = sign * tf.squeeze(black_delta(*params))
+                    sign = entry["exposure"]
+                    marginal_prices[path_idx, book_idx, time_idx] = sign \
+                        * tf.squeeze(black_price(*params))
+                    marginal_deltas[path_idx, book_idx, time_idx] = sign \
+                        * tf.squeeze(black_delta(*params))
 
         prices = tf.reduce_sum(marginal_prices, axis=1)
+
         deltas = np.zeros((num_samples, book.instrument_dim, num_steps + 1))
+        links = [entry["link"] for entry in book.derivatives]
         for path_idx in range(num_samples):
             for time_idx in range(num_steps + 1):
                 deltas[path_idx, :, time_idx] = np.bincount(
-                    book.linker,
+                    links,
                     marginal_deltas[path_idx, :, time_idx],
                     book.instrument_dim)
 
         out = marginal_prices, marginal_deltas, prices, deltas
-        out = [tf.convert_to_tensor(x, FLOAT_DTYPE) for x in out]
+        out = [tf.convert_to_tensor(x / numeraire, FLOAT_DTYPE) for x in out]
 
         return out
 
 
-    def test_book_value_multivariate(self):
-        init_state, book = random_black_scholes_put_call_book(1.25, 4, 4, 3, 69)
-        time, samples = book.sample_paths(init_state, 3, 5, True)
+    def test_value_delta_univariate(self):
+        init_instruments = tf.constant((100., ), FLOAT_DTYPE)
+        init_numeraire = tf.constant((1., ), FLOAT_DTYPE)
+
+        instrument_simulator = GBM(0.01, 0.05, [[0.2]])
+        numeraire_simulator = ConstantBankAccount(0.01)
+        book = DerivativeBook(1.25, instrument_simulator, numeraire_simulator)
+        derivative = PutCall(100., 0.01, 0.2, 1.)
+        book.add_derivative(derivative, 0, 1)
+
+        time, instruments, numeraire = book.sample_paths(
+            init_instruments, init_numeraire, 1, 1, True)
+
+        value_result = book.value(time, instruments, numeraire)
+        delta_result = book.delta(time, instruments, numeraire)
+
+        value_expected = derivative.value(time, instruments, numeraire)
+        delta_expected = derivative.delta(time, instruments, numeraire)
+
+        assert_near(value_result, value_expected)
+        assert_near(delta_result, delta_expected)
+
+    def test_value_delta_multivariate(self):
+        init_instruments, init_numeraire, book = \
+            random_black_scholes_put_call_book(1.25, 10, 4, 3, 69)
+        time, instruments, numeraire = book.sample_paths(
+            init_instruments, init_numeraire, 3, 5, True)
 
         marginal_prices_expected, marginal_deltas_expected, prices_expected, \
-            deltas_expected = self.lazy_marginal(samples, time, book)
+            deltas_expected = self.lazy_marginal(
+                instruments, numeraire, time, book)
 
-        # test marginals
-        instruments = book._get_instruments(samples)
-        marginal_prices_result = book._marginal_book_value(instruments, time)
-        marginal_deltas_result = book._marginal_book_delta(instruments, time)
+        price_result = book.value(time, instruments, numeraire)
+        delta_result = book.delta(time, instruments, numeraire)
 
-        assert_near(marginal_prices_result, marginal_prices_expected, atol=1e-5)
-        assert_near(marginal_deltas_result, marginal_deltas_expected, atol=1e-5)
-
-        # test book value
-        price_result = book.book_value(samples, time)
-        delta_result = book.book_delta(samples, time)
-
-        assert_near(price_result, prices_expected, atol=1e-5)
-        assert_near(delta_result, deltas_expected, atol=1e-5)
+        assert_near(price_result, prices_expected)
+        assert_near(delta_result, deltas_expected)
 
 
     def test_sample_paths(self):
-        for init_state, book in [random_black_scholes_put_call_book(4, 4, 4, 1, 69),
-                                 random_simple_put_call_book(3.)]:
+        one_dim = random_black_scholes_put_call_book(2.5, 1, 1, 1, 56)
+        multi_dim = random_black_scholes_put_call_book(0.5, 4, 4, 1, 69)
 
-            num_paths, num_steps = 2**21, 2
-            time, samples = book.sample_paths(init_state, num_paths, num_steps, True)
+        for init_instruments, init_numeraire, book in [one_dim, multi_dim]:
+            num_paths, num_steps = 2**20, 2
+            time, instruments, numeraire = book.sample_paths(
+                init_instruments, init_numeraire, num_paths, num_steps, True)
 
-            expected_dims = (num_paths,
-                             book.instrument_dim + 1,
-                             num_steps + 1)
-            self.assertTupleEqual(tuple(samples.shape), expected_dims)
+            expected_dims = (num_paths, book.instrument_dim, num_steps + 1)
+            self.assertTupleEqual(tuple(instruments.shape), expected_dims)
 
-            payoff = book.payoff(samples)
+            expected_dims = (num_steps + 1, )
+            self.assertTupleEqual(tuple(numeraire.shape), expected_dims)
+
+            payoff = book.payoff(instruments, numeraire)
             self.assertTupleEqual(tuple(payoff.shape), (num_paths, ))
 
-            deflator = math.exp(-book.rate * book.maturity)
-            price_result = deflator * tf.reduce_mean(payoff, axis=0)
-            price_expected = book.book_value(init_state[tf.newaxis, :, tf.newaxis], 0)
+            price_result = tf.reduce_mean(payoff)
+            price_expected = book.value(time, instruments, numeraire)[0, 0]
 
-            assert_near(price_result[tf.newaxis, tf.newaxis], price_expected, atol=2)
+            # convergence very slow
+            assert_near(price_result, price_expected, atol=1e-1)
