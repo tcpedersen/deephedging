@@ -51,16 +51,19 @@ class DeltaStrategy(object):
     def __call__(self, inputs, training=False):
         """Implementation of call for Strategy.
         Args:
-            inputs: [time, instruments]
+            inputs: [time, instruments, numeraire]
                 time: (1, )
                 instruments: (batch_size, instrument_dim)
+                numeraire: (1, )
             training: bool
         Returns:
             output: (batch_size, instrument_dim)
         """
-        # TODO should handle instruments being in terms of numeraire.
-        time, instruments = inputs
-        return self.book.book_delta(instruments, time)[..., -1]
+        time, instruments, numeraire = inputs
+        discounted_delta = self.book.delta(
+            time, instruments[..., tf.newaxis], numeraire)
+
+        return discounted_delta[..., -1] * numeraire
 
 
 # ==============================================================================
@@ -75,15 +78,16 @@ class ProportionalCost(tf.keras.layers.Layer):
     def call(self, inputs):
         """Implementation of call for ProportionalCost.
         Args:
-            inputs: [shift, instruments]
+            inputs: [shift, martingales]
                 shift: (batch_size, instrument_dim)
-                instruments: (batch_size, instrument_dim)
+                martingales: (batch_size, instrument_dim)
         Returns:
             output: (batch_size, )
         """
-        shift, instruments = inputs
+        shift, martingales = inputs
+
         return tf.reduce_sum(
-            self.cost * tf.multiply(instruments, tf.abs(shift)), 1)
+            self.cost * tf.multiply(martingales, tf.abs(shift)), 1)
 
 # ==============================================================================
 # === Models
@@ -152,18 +156,18 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         """
 
 
-    def costs(self, step, new_hedge, old_hedge, instruments):
+    def costs(self, step, new_hedge, old_hedge, martingales):
         """Returns the costs associated with a trade.
         Args:
             step: int
             new_hedge / old_hedge: (batch_size, instrument_dim)
-            instruments: (batch_size, instrument_dim)
+            martingales: (batch_size, instrument_dim)
         Returns:
             (batch_size, )
         """
         if self.cost_layers:
             delta = new_hedge - old_hedge
-            return self.cost_layers[step]([delta, instruments[..., step]])
+            return self.cost_layers[step]([delta, martingales[..., step]])
 
         return tf.zeros_like(new_hedge[..., 0], FLOAT_DTYPE)
 
@@ -171,29 +175,29 @@ class Hedge(tf.keras.models.Model, abc.ABC):
     @tf.function
     def call(self, inputs, training=False):
         """Implementation of call for tf.keras.models.Model.
-        The instruments and payoff are assumed to be expressed in terms of the
+        The martingales and payoff are assumed to be expressed in terms of the
         numeraire.
 
         Args:
-            inputs: [information, instruments, payoff]
+            inputs: [information, martingales, payoff]
                 information: (batch_size, None, num_steps)
-                instruments: (batch_size, instrument_dim, num_steps + 1)
+                martingales: (batch_size, instrument_dim, num_steps + 1)
                 payoff: (batch_size, ) payoff at time num_steps + 1
                 gradients (optional): (batch_size, instrument_dim, num_steps)
         Returns:
             value: (batch_size, )
         """
-        information, instruments, payoff = inputs
+        information, martingales, payoff = inputs
 
         wealth = -payoff
-        hedge = tf.zeros_like(instruments[..., 0], FLOAT_DTYPE)
+        hedge = tf.zeros_like(martingales[..., 0], FLOAT_DTYPE)
 
         for step, strategy in enumerate(self.strategy_layers):
             observation = self.observation(step, information, hedge)
             old_hedge = hedge
             hedge = strategy(observation, training)
-            costs = self.costs(step, hedge, old_hedge, instruments)
-            increment = instruments[..., step + 1] - instruments[..., step]
+            costs = self.costs(step, hedge, old_hedge, martingales)
+            increment = martingales[..., step + 1] - martingales[..., step]
             wealth += tf.reduce_sum(tf.multiply(hedge, increment), 1)
             wealth -= costs
 
@@ -203,10 +207,11 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 # ==============================================================================
 # === DeltaHedge
 class DeltaHedge(Hedge):
-    def __init__(self, num_steps, book, **kwargs):
+    def __init__(self, num_steps, book, numeraire, **kwargs):
         super().__init__(**kwargs)
         self.book = book
         self._strategy_layers = [DeltaStrategy(book)] * num_steps
+        self.numeraire = numeraire
 
 
     @property
@@ -221,9 +226,10 @@ class DeltaHedge(Hedge):
 
     def observation(self, step, information, hedge) -> tf.Tensor:
         """Implementation of observation for Hedge. Note information must be
-        instruments.
+        martingales.
         """
-        return [step * self.dt, information[..., step]]
+        return [step * self.dt, information[..., step],
+                self.numeraire[tf.newaxis, step]]
 
 
 # ==============================================================================
@@ -257,6 +263,7 @@ class CostSimpleHedge(SimpleHedge):
 
     def observation(self, step, information, hedge):
         non_cost = super().observation(step, information, hedge)
+
         return tf.concat([non_cost, hedge], 1)
 
 
@@ -281,6 +288,7 @@ class RecurrentHedge(Hedge):
 
     def observation(self, step, information, hedge):
         time = tf.ones_like(information[..., step], FLOAT_DTYPE) * step
+
         return tf.concat([time, information[..., step]], 1)
 
 
@@ -293,6 +301,7 @@ class CostRecurrentHedge(RecurrentHedge):
 
     def observation(self, step, information, hedge):
         non_cost = super().observation(step, information, hedge)
+
         return tf.concat([non_cost, hedge], 1)
 
 

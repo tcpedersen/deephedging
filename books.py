@@ -53,7 +53,9 @@ class Derivative(abc.ABC):
 
 
 class PutCall(Derivative):
-    def __init__(self, strike: float, rate: float, volatility: float, theta: float):
+    def __init__(self, maturity: float, strike: float, rate: float,
+                 volatility: float, theta: float):
+        self.maturity = maturity
         self.strike = tf.convert_to_tensor(strike, FLOAT_DTYPE)
         self.rate = float(rate)
         self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
@@ -69,7 +71,7 @@ class PutCall(Derivative):
 
     def value(self, time: tf.Tensor, instrument: tf.Tensor,
               numeraire: tf.Tensor):
-        ttm = time[-1] - time
+        ttm = self.maturity - time
         raw_price = black_price(ttm, instrument, self.strike,
                                 self.rate, self.volatility, self.theta)
 
@@ -78,7 +80,7 @@ class PutCall(Derivative):
 
     def delta(self, time: tf.Tensor, instrument: tf.Tensor,
               numeraire: tf.Tensor):
-        ttm = time[-1] - time
+        ttm = self.maturity - time
         raw_delta = black_delta(ttm, instrument, self.strike,
                                 self.rate, self.volatility, self.theta)
 
@@ -183,10 +185,11 @@ class DerivativeBook(object):
             marginals.append(marginal * entry["exposure"])
 
         marginals = tf.stack(marginals, axis=1)
-        links = [entry["link"] for entry in self.derivatives]
+        links = tf.constant([entry["link"] for entry in self.derivatives],
+                            INT_DTYPE)
 
         v = []
-        for k in tf.range(self.instrument_dim):
+        for k in range(self.instrument_dim):
             mask = tf.squeeze(tf.where(links == k), axis=1)
             v.append(tf.reduce_sum(
                 tf.gather(marginals, mask, axis=1), axis=1, keepdims=True))
@@ -240,7 +243,7 @@ def random_black_scholes_parameters(
         (instrument_dim, num_brownian_motions),
         0.1 / scale, 0.3 / scale, FLOAT_DTYPE)
 
-    init_instruments = uniform((instrument_dim, ), 75, 125, FLOAT_DTYPE)
+    init_instruments = uniform((instrument_dim, ), 95, 105, FLOAT_DTYPE)
     init_numeraire = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
 
     return init_instruments, init_numeraire, drift, rate, diffusion
@@ -260,7 +263,7 @@ def random_black_scholes_put_call_book(
     instrument_simulator = GBM(rate, drift, diffusion)
     numeraire_simulator = ConstantBankAccount(rate)
 
-    strike = uniform((book_size, ), 75, 125, FLOAT_DTYPE)
+    strike = uniform((book_size, ), 95, 105, FLOAT_DTYPE)
     put_call = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
         book_size) - 1, FLOAT_DTYPE)
     exposure = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
@@ -275,14 +278,24 @@ def random_black_scholes_put_call_book(
     book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
     for idx, link in enumerate(linker):
         vol = instrument_simulator.volatility[link]
-        derivative = PutCall(strike[idx], rate, vol, put_call[idx])
+        derivative = PutCall(maturity, strike[idx], rate, vol, put_call[idx])
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book
 
 
-def random_simple_put_call_book(maturity):
-    return random_black_scholes_put_call_book(maturity, 1, 1, 1, 69)
+def random_simple_put_call_book(maturity, spot, strike, rate, drift, sigma, theta):
+    init_instruments = tf.constant((spot, ), FLOAT_DTYPE)
+    init_numeraire = tf.constant((1., ), FLOAT_DTYPE)
+
+    instrument_simulator = GBM(rate, drift, [[sigma]])
+    numeraire_simulator = ConstantBankAccount(rate)
+
+    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
+    derivative = PutCall(maturity, strike, rate, sigma, theta)
+    book.add_derivative(derivative, 0, 1)
+
+    return init_instruments, init_numeraire, book
 
 
 # ==============================================================================
@@ -325,4 +338,8 @@ def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
 
-    return theta * norm_cdf(theta * (m / v + v / 2.))
+    raw_delta = theta * norm_cdf(theta * (m / v + v / 2.))
+    payoff_delta = theta * tf.cast(theta * (spot - strike) > 0, FLOAT_DTYPE)
+    delta = tf.where(tf.equal(v, 0.), payoff_delta, raw_delta)
+
+    return delta

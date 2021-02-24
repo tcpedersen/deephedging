@@ -56,12 +56,10 @@ class MeanVarianceNormaliser:
             x: (batch_size, information_dim, num_steps + 1)
         '''
 
-        # major numerical overflow when sum exceeds dtype max in reduce_mean,
-        # so convert to np.float64 before calculating moments.
-        self.mean, self.variance = tf.cast(
-            tf.nn.moments(tf.cast(x, np.float64), 0), FLOAT_DTYPE)
-
-        self.eps = FLOAT_DTYPE_EPS
+        # major numerical imprecision in reduce_mean for tf.float32,
+        # so convert to tf.float64 before calculating moments.
+        self.mean, self.variance = tf.nn.moments(tf.cast(x, np.float64), 0)
+        self.eps = tf.constant(0., tf.float64)
 
     def transform(self, x):
         '''Normalize data.
@@ -70,9 +68,12 @@ class MeanVarianceNormaliser:
         Returns:
             y: same as input.
         '''
-        y = tf.nn.batch_normalization(
-            x, self.mean, self.variance, None, None, self.eps)
-        return tf.where(tf.equal(self.variance, 0), 0., y)
+        xc = tf.cast(x, tf.float64)
+        yc = tf.nn.batch_normalization(
+            xc, self.mean, self.variance, None, None, self.eps)
+        yc = tf.where(tf.equal(self.variance, 0), 0., yc)
+
+        return tf.cast(yc, FLOAT_DTYPE)
 
     def fit_transform(self, x):
         self.fit(x)
@@ -85,5 +86,17 @@ class MeanVarianceNormaliser:
         Returns:
             x: same as input.
         '''
-        x = tf.sqrt(self.variance + self.eps) * y + self.mean
-        return tf.where(tf.equal(self.variance, 0.), self.mean, x)
+        yc = tf.cast(y, tf.float64)
+        xc = tf.sqrt(self.variance + self.eps) * yc + self.mean
+        xc = tf.where(tf.equal(self.variance, 0.), self.mean, xc)
+
+        return tf.cast(xc, FLOAT_DTYPE)
+
+
+# ==============================================================================
+# === other
+def expected_shortfall(wealth, alpha):
+    """Emperical expected shortfall."""
+    loss = -wealth
+    var = np.quantile(loss, alpha)
+    return tf.reduce_mean(loss[loss > var])

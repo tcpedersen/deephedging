@@ -6,16 +6,16 @@ import matplotlib.pyplot as plt
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, LearningRateScheduler
 
 import models
-from books import random_simple_put_call_book, random_black_scholes_put_call_book
+from books import random_black_scholes_put_call_book
 from constants import FLOAT_DTYPE
 from utils import PeakSchedule, MeanVarianceNormaliser
 
-def split_sample(sample):
-    numeraire = sample[:, -1, tf.newaxis, :]
-    information = instruments = sample[:, :-1, :] / numeraire
-    payoff = book.payoff(sample) / numeraire[:, 0, -1]
+def prepare_sample(instruments, numeraire):
+    information = tf.math.log(instruments / numeraire)
+    martingales = instruments / numeraire
+    payoff = book.payoff(instruments, numeraire)
 
-    return [information, instruments, payoff]
+    return [information, martingales, payoff]
 
 
 def train_model(model, inputs, alpha, normalise=True):
@@ -87,7 +87,7 @@ def plot_distributions(models, inputs, prices):
 
 # ==============================================================================
 # === hyperparameters
-num_train_paths, num_test_paths, num_steps = int(10**6), int(10**6), 7
+num_train_paths, num_test_paths, num_steps = int(2**20), int(2**20), 7
 alpha = 0.95
 cost = 1. / 100
 num_layers, num_units = 2, 15
@@ -95,26 +95,26 @@ num_layers, num_units = 2, 15
 
 # ==============================================================================
 # === sample train data
-init_state, book = random_black_scholes_put_call_book(
+init_instruments, init_numeraire, book = random_black_scholes_put_call_book(
     num_steps / 250, 25, 10, 10, 69)
-time, train_samples = book.sample_paths(
-    init_state, num_train_paths, num_steps, False)
+time, instruments, numeraire = book.sample_paths(
+    init_instruments, init_numeraire, num_train_paths, num_steps, False)
 
 
 # ==============================================================================
 # === train simple model
-train = split_sample(train_samples)
+train = prepare_sample(instruments, numeraire)
 
-simple_model = models.CostSimpleHedge(
-    num_steps, book.instrument_dim, num_layers, num_units, cost)
+simple_model = models.SimpleHedge(
+    num_steps, book.instrument_dim, num_layers, num_units)
 history, norm_train, normaliser = train_model(simple_model, train, alpha)
 
 
 # ==============================================================================
 # === train benchmark
-benchmark = [train[1], train[1], train[2]]
+benchmark = [instruments, train[1], train[2]]
 
-benchmark_model = models.DeltaHedge(num_steps, book)
+benchmark_model = models.DeltaHedge(num_steps, book, numeraire)
 if cost is not None:
     benchmark_model.add_cost_layers(cost)
 
@@ -125,24 +125,24 @@ _, _, _ = train_model(benchmark_model, benchmark, alpha, False)
 # === train no liability
 no_liability = [train[0], train[1], tf.zeros_like(train[2])]
 
-no_liability_model = models.CostSimpleHedge(
-    num_steps, book.instrument_dim, num_layers, num_units, cost)
+no_liability_model = models.SimpleHedge(
+    num_steps, book.instrument_dim, num_layers, num_units)
 _, _, _ = train_model(no_liability_model, no_liability, alpha)
 
 
 # ==============================================================================
 # === sample test data
-time, test_samples = book.sample_paths(
-    init_state, num_test_paths, num_steps, False)
+time, instruments, numeraire = book.sample_paths(
+    init_instruments, init_numeraire, num_test_paths, num_steps, False)
 
-test = split_sample(test_samples)
+test = prepare_sample(instruments, numeraire)
 
 
 # ==============================================================================
 # === calculate risk
 norm_test, simple_risk = test_model(simple_model, test, normaliser)
 
-benchmark = [test[1], test[1], test[2]]
+benchmark = [instruments, test[1], test[2]]
 norm_benchmark, benchmark_risk = test_model(benchmark_model, test, None)
 
 no_liability = [test[0], test[1], tf.zeros_like(test[2])]
@@ -156,7 +156,7 @@ print(f"no liability risk: {no_liability_risk:5f}")
 # ==============================================================================
 # === calculate prices
 simple_model_price = (simple_risk - no_liability_risk)
-benchmark_price = (book.book_value(init_state, 0.) / init_state[-1])[0, 0]
+benchmark_price = tf.squeeze(book.value(time, instruments[0, tf.newaxis, ...], numeraire))[0]
 no_liability_price = 0. # TODO is this true?
 
 print(f"simple_model price: {simple_model_price:5f}")

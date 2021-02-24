@@ -50,8 +50,18 @@ class test_MeanVarianceNormaliser(TestCase):
         normaliser = MeanVarianceNormaliser()
         xn = normaliser.fit_transform(x)
 
-        assert_near(tf.reduce_mean(xn, 0), tf.zeros_like(x[0, ...]), atol=1e-2)
-        assert_near(tf.math.reduce_variance(xn, 0), tf.ones_like(x[0, ...]), atol=1e-2)
+        tf.debugging.assert_type(xn, FLOAT_DTYPE)
+
+        # test with FLOAT_DTYPE
+        mean, variance = tf.nn.moments(xn, 0)
+        assert_near(mean, tf.zeros_like(x[0, ...]))
+        assert_near(variance, tf.ones_like(x[0, ...]), atol=1e-2)
+
+        # test with tf.float64
+        xc = tf.cast(x, tf.float64)
+        mean, variance = tf.nn.moments(tf.cast(xn, tf.float64), 0)
+        assert_near(mean, tf.zeros_like(xc[0, ...]), atol=1e-9)
+        assert_near(variance, tf.ones_like(xc[0, ...]), atol=1e-8)
 
         y = normaliser.inverse_transform(xn)
         assert_near(y, x)

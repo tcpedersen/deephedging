@@ -7,8 +7,7 @@ from numpy.testing import assert_array_almost_equal
 from tensorflow.debugging import assert_near
 
 from books import black_price, black_delta, \
-    random_black_scholes_put_call_book, DerivativeBook, PutCall
-from simulators import GBM, ConstantBankAccount
+    random_black_scholes_put_call_book, random_simple_put_call_book
 from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 
 # ==============================================================================
@@ -118,14 +117,8 @@ class test_BlackScholesPutCallBook(TestCase):
 
 
     def test_value_delta_univariate(self):
-        init_instruments = tf.constant((100., ), FLOAT_DTYPE)
-        init_numeraire = tf.constant((1., ), FLOAT_DTYPE)
-
-        instrument_simulator = GBM(0.01, 0.05, [[0.2]])
-        numeraire_simulator = ConstantBankAccount(0.01)
-        book = DerivativeBook(1.25, instrument_simulator, numeraire_simulator)
-        derivative = PutCall(100., 0.01, 0.2, 1.)
-        book.add_derivative(derivative, 0, 1)
+        init_instruments, init_numeraire, book = random_simple_put_call_book(
+            1., 100., 105., 0.05, 0.1, 0.2, 1.)
 
         time, instruments, numeraire = book.sample_paths(
             init_instruments, init_numeraire, 1, 1, True)
