@@ -58,36 +58,47 @@ def test_model(model, inputs, normaliser=None):
     norm_inputs = [norm_information, inputs[1], inputs[2]]
 
     # test model
-    test = model(norm_inputs)
-    risk = model.risk_measure(test)
+    value, costs = model(norm_inputs)
+    risk = model.risk_measure(value - costs - inputs[2])
 
     return norm_inputs, risk
 
-def plot_payoff(model, inputs, price, book):
-    hedge_payoff = price + model(inputs) + inputs[2]
-
-    plt.figure()
-    plt.scatter(inputs[1][..., -1], hedge_payoff, s=0.5)
-
-    x = tf.cast(tf.linspace(*plt.xlim(), 1000), FLOAT_DTYPE)
-    y = book.payoff(x[..., tf.newaxis, tf.newaxis])
-    plt.plot(x, y, color="black")
-
-    plt.show()
-
 
 def plot_distributions(models, inputs, prices):
-    plt.figure()
+    data = []
     for model, input, price in zip(models, inputs, prices):
-        data = price + model(input)
-        plot_data = np.random.choice(data, 250000, replace=False)
+        value, costs = model(input)
+        wealth = price + value - costs - input[2]
+        data.append([value, costs, wealth])
+
+    # wealth
+    plt.figure()
+    for value, costs, wealth in data:
+        plot_data = np.random.choice(wealth, 250000, replace=False)
         plt.hist(plot_data, bins=250, density=True, alpha=0.5)
     plt.show()
+
+    # value
+    plt.figure()
+    for value, costs, wealth in data:
+        plot_data = np.random.choice(value, 250000, replace=False)
+        plt.hist(plot_data, bins=250, density=True, alpha=0.5)
+    plt.show()
+
+    # costs
+    plt.figure()
+    for value, costs, wealth in data:
+        plot_data = np.random.choice(costs, 250000, replace=False)
+        plt.hist(plot_data, bins=250, density=True, alpha=0.5)
+    plt.show()
+
+    return data
+
 
 
 # ==============================================================================
 # === hyperparameters
-num_train_paths, num_test_paths, num_steps = int(2**20), int(2**20), 7
+num_train_paths, num_test_paths, num_steps = int(2**20), int(2**20), 30
 alpha = 0.95
 cost = 1. / 100
 num_layers, num_units = 2, 15
@@ -105,8 +116,13 @@ time, instruments, numeraire = book.sample_paths(
 # === train simple model
 train = prepare_sample(instruments, numeraire)
 
-simple_model = models.SimpleHedge(
-    num_steps, book.instrument_dim, num_layers, num_units)
+if cost is not None:
+    simple_model = models.CostSimpleHedge(
+        num_steps, book.instrument_dim, num_layers, num_units, cost)
+else:
+    simple_model = models.SimpleHedge(
+        num_steps, book.instrument_dim, num_layers, num_units)
+
 history, norm_train, normaliser = train_model(simple_model, train, alpha)
 
 
@@ -125,8 +141,13 @@ _, _, _ = train_model(benchmark_model, benchmark, alpha, False)
 # === train no liability
 no_liability = [train[0], train[1], tf.zeros_like(train[2])]
 
-no_liability_model = models.SimpleHedge(
-    num_steps, book.instrument_dim, num_layers, num_units)
+if cost is not None:
+    no_liability_model = models.CostSimpleHedge(
+        num_steps, book.instrument_dim, num_layers, num_units, cost)
+else:
+    no_liability_model = models.SimpleHedge(
+        num_steps, book.instrument_dim, num_layers, num_units)
+
 _, _, _ = train_model(no_liability_model, no_liability, alpha)
 
 

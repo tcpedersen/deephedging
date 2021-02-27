@@ -44,14 +44,17 @@ history = model.fit(
 # ====
 # https://www.dropbox.com/s/g1elm90a6i6x79n/hedge_scatter.R?dl=0
 
-initial_hedge_ratio = tf.squeeze(model.strategy_layers[0]([tf.constant([0.], FLOAT_DTYPE), instruments[..., 0], numeraire[tf.newaxis, 0]]))[0]
-print(f"initial hedge ratio: {initial_hedge_ratio: .4f}, should be 0.5422283.")
+value, costs = model(train)
+
+initial_hedge_ratio = tf.squeeze(model.strategy_layers[0](
+    [tf.constant([0.], FLOAT_DTYPE), instruments[..., 0], numeraire[tf.newaxis, 0]]))[0]
+print(f"initial hedge ratio: {initial_hedge_ratio:.4f}, should be {0.5422283:.4f}.")
 
 price = tf.squeeze(book.value(time, instruments[0, tf.newaxis, ...], numeraire))[0]
-print(f"initial investment: {price:.4f}, should be 8.0214.")
+print(f"initial investment: {price:.4f}, should be {8.0214:.4f}.")
 
 payoff = tf.reduce_mean(book.payoff(instruments, numeraire) * numeraire[0])
-print(f"average discounted option payoff: {payoff:.4f}, should be 11.0445.")
+print(f"average discounted option payoff: {payoff:.4f}, should be {11.0445:.4f}.")
 
-hedge_wealth = tf.reduce_mean((price + model(train) + book.payoff(instruments, numeraire)) * numeraire[0])
-print(f"average discounted portfolio value: {hedge_wealth:.4f}, should be 11.0242.")
+hedge_wealth = tf.reduce_mean((price + value - costs) * numeraire[0])
+print(f"average discounted portfolio value: {hedge_wealth:.4f}, should be {11.0242:.4f}.")

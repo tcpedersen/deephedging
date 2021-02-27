@@ -135,8 +135,9 @@ class Hedge(tf.keras.models.Model, abc.ABC):
     def train_step(self, data):
         (x, ) = data
         with tf.GradientTape() as tape:
-            y = self(x, training=True)
-            loss = self.risk_measure(y)
+            value, costs = self(x, training=True)
+            wealth = value - costs - x[-1]
+            loss = self.risk_measure(wealth)
 
         trainable_vars = [self.risk_measure.w] + self.trainable_variables
         gradients = tape.gradient(loss, trainable_vars)
@@ -166,8 +167,8 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             (batch_size, )
         """
         if self.cost_layers:
-            delta = new_hedge - old_hedge
-            return self.cost_layers[step]([delta, martingales[..., step]])
+            shift = new_hedge - old_hedge
+            return self.cost_layers[step]([shift, martingales[..., step]])
 
         return tf.zeros_like(new_hedge[..., 0], FLOAT_DTYPE)
 
@@ -186,22 +187,24 @@ class Hedge(tf.keras.models.Model, abc.ABC):
                 gradients (optional): (batch_size, instrument_dim, num_steps)
         Returns:
             value: (batch_size, )
+            costs: (batch_size, )
         """
         information, martingales, payoff = inputs
 
-        wealth = -payoff
+        costs = tf.zeros_like(payoff, FLOAT_DTYPE)
+        value = tf.zeros_like(payoff, FLOAT_DTYPE)
         hedge = tf.zeros_like(martingales[..., 0], FLOAT_DTYPE)
 
         for step, strategy in enumerate(self.strategy_layers):
             observation = self.observation(step, information, hedge)
             old_hedge = hedge
             hedge = strategy(observation, training)
-            costs = self.costs(step, hedge, old_hedge, martingales)
             increment = martingales[..., step + 1] - martingales[..., step]
-            wealth += tf.reduce_sum(tf.multiply(hedge, increment), 1)
-            wealth -= costs
 
-        return wealth
+            value += tf.reduce_sum(tf.multiply(hedge, increment), 1)
+            costs += self.costs(step, hedge, old_hedge, martingales)
+
+        return value, costs
 
 
 # ==============================================================================
