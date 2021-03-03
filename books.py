@@ -5,87 +5,9 @@ import abc
 
 from tensorflow.random import uniform
 
-from utils import norm_cdf, near_positive_definite
-from constants import FLOAT_DTYPE, INT_DTYPE, FLOAT_DTYPE_EPS
+from derivatives import * # TODO
+from constants import FLOAT_DTYPE, INT_DTYPE
 from simulators import Simulator, GBM, ConstantBankAccount
-
-# ==============================================================================
-# === Derivatives
-class Derivative(abc.ABC):
-    @abc.abstractmethod
-    def payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
-        """Computes payoff of derivative in terms of numeraire for each sample
-        in batch
-        Args:
-            instrument: (batch_size, time_steps + 1)
-            numeraire: (time_steps + 1, )
-        Returns:
-            payoff: (batch_size, )
-        """
-
-
-    @abc.abstractmethod
-    def value(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
-        """Computes price of derivative in terms of numeraire for each sample
-        in batch.
-        Args:
-            time: (time_steps + 1, )
-            instrument: (batch_size, time_steps + 1)
-            numeraire: (time_steps + 1, )
-        Returns:
-            value: (batch_size, time_steps + 1)
-        """
-
-
-    @abc.abstractmethod
-    def delta(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
-        """Computes the delta of the derivative in terms of numeraire for each
-        sample in batch.
-        Args:
-            time: (time_steps + 1, )
-            instrument: (batch_size, time_steps + 1)
-            numeraire: (time_steps + 1, )
-        Returns:
-            delta: (batch_size, time_steps + 1)
-        """
-
-
-class PutCall(Derivative):
-    def __init__(self, maturity: float, strike: float, rate: float,
-                 volatility: float, theta: float):
-        self.maturity = maturity
-        self.strike = tf.convert_to_tensor(strike, FLOAT_DTYPE)
-        self.rate = float(rate)
-        self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
-        self.theta = tf.convert_to_tensor(theta, FLOAT_DTYPE)
-
-
-    def payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
-        diff = self.theta * (instrument[..., -1] - self.strike)
-        itm = tf.cast(diff > 0, FLOAT_DTYPE)
-
-        return (diff * itm) / numeraire[-1]
-
-
-    def value(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
-        ttm = self.maturity - time
-        raw_price = black_price(ttm, instrument, self.strike,
-                                self.rate, self.volatility, self.theta)
-
-        return raw_price / numeraire
-
-
-    def delta(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
-        ttm = self.maturity - time
-        raw_delta = black_delta(ttm, instrument, self.strike,
-                                self.rate, self.volatility, self.theta)
-
-        return raw_delta / numeraire
-
 
 # ==============================================================================
 # === Base
@@ -255,6 +177,7 @@ def random_black_scholes_put_call_book(
         instrument_dim: int,
         num_brownian_motions: int,
         seed: int):
+    assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
 
     init_instruments, init_numeraire, drift, rate, diffusion = \
         random_black_scholes_parameters(
@@ -270,8 +193,10 @@ def random_black_scholes_put_call_book(
         book_size) - 1, FLOAT_DTYPE)
 
     if instrument_dim  > 1:
-        linker = tf.random.uniform((book_size, ), 0, instrument_dim - 1,
-                                   INT_DTYPE)
+        one_of_each = tf.range(instrument_dim)
+        other_random = tf.random.uniform((book_size - instrument_dim, ),
+                                         0, instrument_dim - 1, INT_DTYPE)
+        linker = tf.random.shuffle(tf.concat([one_of_each, other_random], 0))
     else:
         linker = tf.convert_to_tensor((0, ), INT_DTYPE)
 
@@ -296,50 +221,3 @@ def random_simple_put_call_book(maturity, spot, strike, rate, drift, sigma, thet
     book.add_derivative(derivative, 0, 1)
 
     return init_instruments, init_numeraire, book
-
-
-# ==============================================================================
-# === Black Scholes
-def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
-    """Returns price in Black's model.
-    Args:
-        time_to_maturity: (time_steps + 1, )
-        spot: (batch_size, time_steps + 1)
-        strike: float
-        rate: float
-        volatility: float
-        theta: float
-    Returns:
-        price: (batch_size, time_steps + 1)
-    """
-    deflator = tf.math.exp(-rate * time_to_maturity)
-    forward = spot / deflator
-    m = tf.math.log(forward / strike)
-    v = volatility * tf.math.sqrt(time_to_maturity)
-    m_over_v = m / v
-    v_over_2 = v / 2.
-
-    value = deflator * theta \
-            * (forward * norm_cdf(theta * (m_over_v + v_over_2)) \
-               - strike * norm_cdf(theta * (m_over_v - v_over_2)))
-
-    return value
-
-
-def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
-    """Returns delta in Black's model.
-    Args:
-        see black_price
-    Returns:
-        delta: (batch_size, time_steps + 1)
-    """
-    deflator = tf.math.exp(-rate * time_to_maturity)
-    forward = spot / deflator
-    m = tf.math.log(forward / strike)
-    v = volatility * tf.math.sqrt(time_to_maturity)
-
-    raw_delta = theta * norm_cdf(theta * (m / v + v / 2.))
-    payoff_delta = theta * tf.cast(theta * (spot - strike) > 0, FLOAT_DTYPE)
-    delta = tf.where(tf.equal(v, 0.), payoff_delta, raw_delta)
-
-    return delta

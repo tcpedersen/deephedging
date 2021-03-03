@@ -207,6 +207,20 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return value, costs
 
 
+    def hedge_ratios(self, inputs):
+        information, martingales, payoff = inputs
+        hedge_ratios = []
+
+        hedge = tf.zeros_like(martingales[..., 0], FLOAT_DTYPE)
+
+        for step, strategy in enumerate(self.strategy_layers):
+            observation = self.observation(step, information, hedge)
+            hedge = strategy(observation, training=False)
+            hedge_ratios.append(hedge)
+
+        return tf.stack(hedge_ratios, axis=-1)
+
+
 # ==============================================================================
 # === DeltaHedge
 class DeltaHedge(Hedge):

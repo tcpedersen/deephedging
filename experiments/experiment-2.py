@@ -98,9 +98,9 @@ def plot_distributions(models, inputs, prices):
 
 # ==============================================================================
 # === hyperparameters
-num_train_paths, num_test_paths, num_steps = int(2**20), int(2**20), 30
+num_train_paths, num_test_paths, num_steps = int(2**18), int(2**20), 30
 alpha = 0.95
-cost = 1. / 100
+cost = 0.25 / 100
 num_layers, num_units = 2, 15
 
 
@@ -164,7 +164,7 @@ test = prepare_sample(instruments, numeraire)
 norm_test, simple_risk = test_model(simple_model, test, normaliser)
 
 benchmark = [instruments, test[1], test[2]]
-norm_benchmark, benchmark_risk = test_model(benchmark_model, test, None)
+norm_benchmark, benchmark_risk = test_model(benchmark_model, benchmark, None)
 
 no_liability = [test[0], test[1], tf.zeros_like(test[2])]
 _, no_liability_risk = test_model(no_liability_model, no_liability, normaliser)
@@ -176,7 +176,7 @@ print(f"no liability risk: {no_liability_risk:5f}")
 
 # ==============================================================================
 # === calculate prices
-simple_model_price = (simple_risk - no_liability_risk)
+simple_model_price = simple_risk - no_liability_risk
 benchmark_price = tf.squeeze(book.value(time, instruments[0, tf.newaxis, ...], numeraire))[0]
 no_liability_price = 0. # TODO is this true?
 

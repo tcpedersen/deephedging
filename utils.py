@@ -22,12 +22,14 @@ def norm_qdf(x):
     return erfinv(2. * x - 1.) * SQRT_TWO
 
 def near_positive_definite(A):
+    dtype = tf.float64
     C = (A + tf.transpose(A)) / 2.
-    eigval, eigvec = tf.linalg.eig(C)
+    eigval, eigvec = tf.linalg.eig(tf.cast(C, dtype))
     eigval = tf.where(tf.math.real(eigval) < 0, 0, eigval)
     psd = tf.math.real(eigvec @ tf.linalg.diag(eigval) @ tf.transpose(eigvec))
+    eps = tf.sqrt(tf.cast(FLOAT_DTYPE_EPS, dtype))
 
-    return psd + tf.eye(psd.shape[0], dtype=FLOAT_DTYPE) * tf.sqrt(FLOAT_DTYPE_EPS)
+    return tf.cast(psd + tf.eye(psd.shape[0], dtype=dtype) * eps, FLOAT_DTYPE)
 
 # ==============================================================================
 # === Training

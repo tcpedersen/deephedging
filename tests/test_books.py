@@ -126,11 +126,12 @@ class test_BlackScholesPutCallBook(TestCase):
         value_result = book.value(time, instruments, numeraire)
         delta_result = book.delta(time, instruments, numeraire)
 
-        value_expected = derivative.value(time, instruments, numeraire)
-        delta_expected = derivative.delta(time, instruments, numeraire)
+        value_expected = book.value(time, instruments, numeraire)
+        delta_expected = book.delta(time, instruments, numeraire)
 
         assert_near(value_result, value_expected)
         assert_near(delta_result, delta_expected)
+
 
     def test_value_delta_multivariate(self):
         init_instruments, init_numeraire, book = \
