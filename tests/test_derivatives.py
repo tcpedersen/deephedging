@@ -5,7 +5,6 @@ import tensorflow as tf
 from tensorflow.debugging import assert_near
 
 import derivatives
-from books import random_simple_put_call_book
 from constants import FLOAT_DTYPE
 
 class test_binary(unittest.TestCase):
@@ -110,25 +109,17 @@ class test_barrier(unittest.TestCase):
 
 
     def test_up_and_out_call_barrier_below_strike(self):
-        instrument = tf.constant([[90, 93,  86],
-                                  [93., 100, 122]], FLOAT_DTYPE)
-
         barrier = 95
-        binary = derivatives.BarrierCall(
-            self.maturity,
-            self.strike,
-            barrier,
-            self.rate,
-            self.volatility,
-            outin=1,
-            updown=1)
 
-        price_expected = tf.constant([
-            [0., 0., 0.],
-            [0., 0., 0.]
-            ], FLOAT_DTYPE) / self.numeraire
-
-        self.run_value_delta(instrument, binary, price_expected)
+        with self.assertRaises(AssertionError):
+            derivatives.BarrierCall(
+                self.maturity,
+                self.strike,
+                barrier,
+                self.rate,
+                self.volatility,
+                outin=1,
+                updown=1)
 
 
     def test_up_and_out_call_barrier_above_strike(self):

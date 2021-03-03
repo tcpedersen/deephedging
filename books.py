@@ -5,7 +5,7 @@ import abc
 
 from tensorflow.random import uniform
 
-from derivatives import * # TODO
+from derivatives import Derivative, PutCall, BarrierCall
 from constants import FLOAT_DTYPE, INT_DTYPE
 from simulators import Simulator, GBM, ConstantBankAccount
 
@@ -148,7 +148,7 @@ class DerivativeBook(object):
 
 
 # =============================================================================
-# === random
+# === random generation of books
 def random_black_scholes_parameters(
         maturity: int,
         instrument_dim: int,
@@ -171,7 +171,7 @@ def random_black_scholes_parameters(
     return init_instruments, init_numeraire, drift, rate, diffusion
 
 
-def random_black_scholes_put_call_book(
+def random_put_call_book(
         maturity: float,
         book_size: int,
         instrument_dim: int,
@@ -209,7 +209,7 @@ def random_black_scholes_put_call_book(
     return init_instruments, init_numeraire, book
 
 
-def random_simple_put_call_book(maturity, spot, strike, rate, drift, sigma, theta):
+def simple_put_call_book(maturity, spot, strike, rate, drift, sigma, theta):
     init_instruments = tf.constant((spot, ), FLOAT_DTYPE)
     init_numeraire = tf.constant((1., ), FLOAT_DTYPE)
 
@@ -221,3 +221,71 @@ def random_simple_put_call_book(maturity, spot, strike, rate, drift, sigma, thet
     book.add_derivative(derivative, 0, 1)
 
     return init_instruments, init_numeraire, book
+
+
+def random_barrier_book(
+        maturity: float,
+        book_size: int,
+        instrument_dim: int,
+        num_brownian_motions: int,
+        seed: int):
+    assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
+
+    init_instruments, init_numeraire, drift, rate, diffusion = \
+        random_black_scholes_parameters(
+            maturity, instrument_dim, num_brownian_motions, seed)
+
+    instrument_simulator = GBM(rate, drift, diffusion)
+    numeraire_simulator = ConstantBankAccount(rate)
+
+    strike = uniform((book_size, ), 95, 105, FLOAT_DTYPE)
+    exposure = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
+        book_size) - 1, FLOAT_DTYPE)
+
+    outin = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
+        book_size) - 1, FLOAT_DTYPE)
+    updown = tf.cast(2 * tfp.distributions.Binomial(1, probs=0.5).sample(
+        book_size) - 1, FLOAT_DTYPE)
+
+    if instrument_dim  > 1:
+        one_of_each = tf.range(instrument_dim)
+        other_random = tf.random.uniform((book_size - instrument_dim, ),
+                                         0, instrument_dim - 1, INT_DTYPE)
+        linker = tf.random.shuffle(tf.concat([one_of_each, other_random], 0))
+    else:
+        linker = tf.convert_to_tensor((0, ), INT_DTYPE)
+
+    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
+    for idx, link in enumerate(linker):
+        if link == 15:
+            break
+
+        call_min_barrier = init_instruments[link] - 10
+        call_max_barrier = init_instruments[link] + 10
+        if outin[idx] == 1:
+            if updown[idx] == 1:
+                lower = max(strike[idx], init_instruments[link]) + 1
+                upper = call_max_barrier
+            elif updown[idx] == -1:
+                lower = call_min_barrier
+                upper = init_instruments[link]
+        elif outin[idx] == -1:
+            if updown[idx] == 1:
+                lower = init_instruments[link]
+                upper = call_max_barrier
+            elif updown[idx] == -1:
+                lower = call_min_barrier
+                upper = init_instruments[link]
+
+        barrier = uniform((1, ), lower, upper, FLOAT_DTYPE)
+
+        vol = instrument_simulator.volatility[link]
+        derivative = BarrierCall(
+            maturity, strike[idx], barrier, rate, vol, outin[idx], updown[idx])
+        book.add_derivative(derivative, link, exposure[idx])
+
+    return init_instruments, init_numeraire, book
+
+
+# linked = instruments[:, link, :]
+# marginal = derivative.value(time, linked, numeraire)

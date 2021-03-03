@@ -6,8 +6,8 @@ from unittest import TestCase
 from numpy.testing import assert_array_almost_equal
 from tensorflow.debugging import assert_near
 
-from books import black_price, black_delta, \
-    random_black_scholes_put_call_book, random_simple_put_call_book
+from books import random_put_call_book, simple_put_call_book, random_barrier_book
+from derivatives import black_price, black_delta
 from constants import FLOAT_DTYPE, NP_FLOAT_DTYPE
 
 # ==============================================================================
@@ -117,7 +117,7 @@ class test_BlackScholesPutCallBook(TestCase):
 
 
     def test_value_delta_univariate(self):
-        init_instruments, init_numeraire, book = random_simple_put_call_book(
+        init_instruments, init_numeraire, book = simple_put_call_book(
             1., 100., 105., 0.05, 0.1, 0.2, 1.)
 
         time, instruments, numeraire = book.sample_paths(
@@ -135,7 +135,7 @@ class test_BlackScholesPutCallBook(TestCase):
 
     def test_value_delta_multivariate(self):
         init_instruments, init_numeraire, book = \
-            random_black_scholes_put_call_book(1.25, 10, 4, 3, 69)
+            random_put_call_book(1.25, 10, 4, 3, 69)
         time, instruments, numeraire = book.sample_paths(
             init_instruments, init_numeraire, 3, 5, True)
 
@@ -151,8 +151,8 @@ class test_BlackScholesPutCallBook(TestCase):
 
 
     def test_sample_paths(self):
-        one_dim = random_black_scholes_put_call_book(2.5, 1, 1, 1, 56)
-        multi_dim = random_black_scholes_put_call_book(0.5, 4, 4, 1, 69)
+        one_dim = random_put_call_book(2.5, 1, 1, 1, 56)
+        multi_dim = random_put_call_book(0.5, 4, 4, 1, 69)
 
         for init_instruments, init_numeraire, book in [one_dim, multi_dim]:
             num_paths, num_steps = 2**20, 2
@@ -173,3 +173,18 @@ class test_BlackScholesPutCallBook(TestCase):
 
             # convergence very slow
             assert_near(price_result, price_expected, atol=1e-1)
+
+
+class test_random_books(TestCase):
+    def test_random_barrier_book(self):
+        init_instruments, init_numeraire, book = random_barrier_book(
+            1.25, 1000, 100, 100, 69)
+        time, instruments, numeraire = book.sample_paths(
+            init_instruments, init_numeraire, 3, 2, False)
+
+        for entry in book.derivatives:
+            linked = instruments[:, entry["link"], :]
+            marginal = entry["derivative"].value(time, linked, numeraire)
+
+            message = f"entry: {entry}"
+            tf.debugging.assert_positive(marginal[..., 0], message)

@@ -81,7 +81,6 @@ class PutCall(Derivative):
         return raw_delta / numeraire
 
 
-
 class BinaryCall(Derivative):
     def __init__(self, maturity: float, strike: float, volatility: float):
         self.maturity = float(maturity)
@@ -253,6 +252,9 @@ class BarrierCall(Barrier):
                  updown: float):
         self.strike = float(strike)
         super().__init__(barrier, rate, volatility, outin, updown)
+
+        if self.outin == 1 and self.updown == 1:
+            assert self.barrier > self.strike, "derivative is worthless."
 
         self.barrier_call = PutCall(
             maturity, self.barrier, self.rate, self.volatility, 1)
