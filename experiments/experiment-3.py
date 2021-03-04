@@ -1,106 +1,65 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-import numpy as np
 import matplotlib.pyplot as plt
 
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, LearningRateScheduler
-
-from models import SimpleHedge, DeltaHedge, EntropicRisk, ExpectedShortfall, CostSimpleHedge, CostDeltaHedge
-from books import random_simple_put_call_book, random_black_scholes_put_call_book
-from constants import FLOAT_DTYPE
-from utils import PeakSchedule, MeanVarianceNormaliser
-
-def split_sample(sample, grads):
-    numeraire = sample[:, -1, tf.newaxis, :]
-    information = instruments = sample[:, :-1, :] / numeraire
-    payoff = book.payoff(sample) / numeraire[:, 0, -1]
-
-    return [information, instruments, payoff, grads]
-
-
-def train_model(model, inputs, alpha, normalise=True):
-    # normalise data
-    normaliser = MeanVarianceNormaliser()
-    norm_information = normaliser.fit_transform(inputs[0]) if normalise else inputs[0]
-    norm_inputs = [norm_information, inputs[1], inputs[2], inputs[3]]
-
-    # compile model
-    risk_measure = ExpectedShortfall(alpha)
-    optimizer = tf.keras.optimizers.Adam(1e-1)
-    model.compile(risk_measure, optimizer=optimizer)
-
-    # define callbacks
-    batch_size, epochs = 2**10, 100
-
-    early_stopping = EarlyStopping(monitor="loss", patience=10, min_delta=1e-4)
-    reduce_lr = ReduceLROnPlateau(monitor="loss", verbose=1, patience=2)
-
-    # schedule = PeakSchedule(1e-4, 1e-1, epochs)
-    # lr_schedule = LearningRateScheduler(schedule, verbose=1)
-
-    callbacks = [early_stopping, reduce_lr]
-
-    # train
-    history = model.fit(norm_inputs,
-                        batch_size=batch_size,
-                        epochs=epochs,
-                        callbacks=callbacks)
-
-    return history, norm_inputs, normaliser
-
-
-def test_model(model, inputs, normaliser=None):
-    # normalise data
-    if normaliser is not None:
-        norm_information =  normaliser.transform(inputs[0])
-    else:
-        norm_information = inputs[0]
-    norm_inputs = [norm_information, inputs[1], inputs[2], inputs[3]]
-
-    # test model
-    test = model(norm_inputs)
-    risk = model.risk_measure(test)
-
-    return norm_inputs, risk
-
+import models
+from books import random_barrier_book
+from utils import precise_mean
 
 # ==============================================================================
 # === hyperparameters
-num_train_paths, num_test_paths, num_steps = int(10**5), int(10**6), 7
+batch_size, time_steps = int(2**16), 30
 alpha = 0.95
-cost = 1. / 100
 
 
 # ==============================================================================
-# === sample train data
-init_state, book = random_black_scholes_put_call_book(
-    num_steps / 250, 10, 10, 10, 69)
-
-time, train_samples = book.sample_paths(
-    init_state, num_train_paths, num_steps, False)
-train_grads = book.book_delta(train_samples, time)
+# === sample data
+init_instruments, init_numeraire, book = random_barrier_book(
+    time_steps / 250, 1, 1, 1, 69)
+time, instruments, numeraire = book.sample_paths(
+    init_instruments, init_numeraire, batch_size, time_steps * 20, False)
 
 
 # ==============================================================================
-# === train simple model
-train = split_sample(train_samples, train_grads)
+# === setup model
+model = models.DeltaHedge(book, time, numeraire)
 
-simple_model = CostSimpleHedge(num_steps, book.instrument_dim, 2, 15, cost)
-simple_model.use_gradients = True
+train = [instruments / numeraire,
+         instruments / numeraire,
+         book.payoff(instruments, numeraire)]
 
-_, _, normaliser = train_model(simple_model, train, alpha)
-
-
-# ==============================================================================
-# === sample test data
-time, test_samples = book.sample_paths(
-    init_state, num_test_paths, num_steps, False)
-test_grads = book.book_delta(test_samples, time)
-
-test = split_sample(test_samples, test_grads)
 
 # ==============================================================================
-# === calculate risk
-norm_test, simple_risk = test_model(simple_model, test, normaliser)
+# ====
+value, _ = model(train)
 
-print(f"simple model risk: {simple_risk:5f}")
+price = book.value(time, instruments, numeraire)[0, 0]
+print(f"initial investment: {price * numeraire[0]:.4f}.")
+
+payoff = precise_mean(book.payoff(instruments, numeraire))
+print(f"average discounted option payoff: {payoff:.4f}.")
+
+hedge_wealth = price + precise_mean(value)
+print(f"average discounted portfolio value: {hedge_wealth:.4f}.")
+
+# =============================================================================
+# === visualize
+derivative = book.derivatives[0]["derivative"]
+crossed = tf.squeeze(tf.reduce_any(derivative.crossed(instruments), 2))
+payoff = book.payoff(instruments, numeraire)
+xlim = (tf.reduce_min(instruments[:, 0, -1]), tf.reduce_max(instruments[:, 0, -1]))
+
+for indices in [crossed, ~crossed]:
+    m = tf.boolean_mask(instruments[..., 0, -1], indices, 0)
+
+    key = tf.argsort(m, 0)
+    x = tf.gather(m, key)
+
+    y1 = tf.gather(payoff[indices], key)
+    y2 = tf.gather(tf.boolean_mask(price + value, indices), key)
+
+    plt.figure()
+    plt.xlim(*xlim)
+    plt.scatter(x, y2, s=0.5)
+    plt.plot(x, y1, color="black")
+    plt.show()

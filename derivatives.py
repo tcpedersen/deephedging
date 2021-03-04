@@ -120,9 +120,9 @@ class Barrier(Derivative, abc.ABC):
                  volatility: float,
                  outin: float,
                  updown: float):
-        self.barrier = tf.convert_to_tensor(barrier, FLOAT_DTYPE)
+        self.barrier = float(barrier)
         self.rate = float(rate)
-        self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
+        self.volatility = float(volatility)
 
         assert outin == 1 or outin == -1
         assert updown == 1 or updown == -1
@@ -174,7 +174,7 @@ class Barrier(Derivative, abc.ABC):
 
     def value(self, time: tf.Tensor, instrument: tf.Tensor,
               numeraire: tf.Tensor):
-        if tf.sign(self.outin * self.updown) == 1:
+        if self.outin * self.updown == 1:
             standard = self.up_value(time, instrument, numeraire)
         else:
             standard = self.down_value(time, instrument, numeraire)
@@ -202,7 +202,7 @@ class Barrier(Derivative, abc.ABC):
 
     def delta(self, time: tf.Tensor, instrument: tf.Tensor,
               numeraire: tf.Tensor):
-        if tf.sign(self.outin * self.updown) == 1:
+        if self.outin * self.updown == 1:
             standard_grad = self.up_delta(time, instrument, numeraire)
         else:
             standard_grad = self.down_delta(time, instrument, numeraire)

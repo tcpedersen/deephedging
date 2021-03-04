@@ -25,7 +25,7 @@ class DenseStrategy(tf.keras.layers.Layer):
 
         self.output_layer = Dense(units=self.instrument_dim)
 
-    @tf.function
+
     def call(self, inputs, training=False):
         """Implementation of call for Strategy.
         Args:
@@ -51,19 +51,21 @@ class DeltaStrategy(object):
     def __call__(self, inputs, training=False):
         """Implementation of call for Strategy.
         Args:
-            inputs: [time, instruments, numeraire]
-                time: (1, )
-                instruments: (batch_size, instrument_dim)
-                numeraire: (1, )
+            inputs: [time, martingales, numeraire]
+                step: int
+                time: (time_steps + 1, )
+                martingales: (batch_size, instrument_dim, time_steps + 1)
+                numeraire: (time_steps + 1, )
             training: bool
         Returns:
             output: (batch_size, instrument_dim)
         """
-        time, instruments, numeraire = inputs
-        discounted_delta = self.book.delta(
-            time, instruments[..., tf.newaxis], numeraire)
+        step, time, martingales, numeraire = inputs
+        instruments = martingales * numeraire
 
-        return discounted_delta[..., -1] * numeraire
+        discounted_delta = self.book.delta(time, instruments, numeraire)
+
+        return discounted_delta[..., step] * numeraire[step]
 
 
 # ==============================================================================
@@ -74,7 +76,6 @@ class ProportionalCost(tf.keras.layers.Layer):
         self.cost = tf.constant(float(cost), FLOAT_DTYPE)
 
 
-    @tf.function
     def call(self, inputs):
         """Implementation of call for ProportionalCost.
         Args:
@@ -131,7 +132,6 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         self.risk_measure = risk_measure
 
 
-    @tf.function
     def train_step(self, data):
         (x, ) = data
         with tf.GradientTape() as tape:
@@ -207,6 +207,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return value, costs
 
 
+    @tf.function
     def hedge_ratios(self, inputs):
         information, martingales, payoff = inputs
         hedge_ratios = []
@@ -224,11 +225,13 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 # ==============================================================================
 # === DeltaHedge
 class DeltaHedge(Hedge):
-    def __init__(self, num_steps, book, numeraire, **kwargs):
+    def __init__(self, book, time, numeraire, **kwargs):
         super().__init__(**kwargs)
         self.book = book
-        self._strategy_layers = [DeltaStrategy(book)] * num_steps
+        self.time = time
         self.numeraire = numeraire
+
+        self._strategy_layers = [DeltaStrategy(book)] * (len(self.time) - 1)
 
 
     @property
@@ -236,17 +239,11 @@ class DeltaHedge(Hedge):
         return self._strategy_layers
 
 
-    @property
-    def dt(self) -> tf.Tensor:
-        return tf.constant([self.book.maturity / self.num_steps], FLOAT_DTYPE)
-
-
     def observation(self, step, information, hedge) -> tf.Tensor:
         """Implementation of observation for Hedge. Note information must be
         martingales.
         """
-        return [step * self.dt, information[..., step],
-                self.numeraire[tf.newaxis, step]]
+        return [step, self.time, information, self.numeraire]
 
 
 # ==============================================================================

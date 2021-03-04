@@ -257,9 +257,6 @@ def random_barrier_book(
 
     book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
     for idx, link in enumerate(linker):
-        if link == 15:
-            break
-
         call_min_barrier = init_instruments[link] - 10
         call_max_barrier = init_instruments[link] + 10
         if outin[idx] == 1:
@@ -285,7 +282,3 @@ def random_barrier_book(
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book
-
-
-# linked = instruments[:, link, :]
-# marginal = derivative.value(time, linked, numeraire)

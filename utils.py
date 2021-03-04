@@ -7,13 +7,13 @@ from tensorflow_probability.python.internal import special_math
 
 from constants import FLOAT_DTYPE_EPS, FLOAT_DTYPE
 
-ONE_OVER_SQRT_TWO_PI = 1. / np.sqrt(2. * np.pi)
-SQRT_TWO = np.sqrt(2.)
+ONE_OVER_SQRT_TWO_PI = 1. / tf.sqrt(2. * np.pi)
+SQRT_TWO = tf.sqrt(2.)
 
 # ==============================================================================
 # === Gaussian
 def norm_pdf(x):
-    return ONE_OVER_SQRT_TWO_PI * np.exp(-0.5 * x * x)
+    return ONE_OVER_SQRT_TWO_PI * tf.exp(-0.5 * x * x)
 
 def norm_cdf(x):
     return special_math.ndtr(x)
@@ -102,3 +102,7 @@ def expected_shortfall(wealth, alpha):
     loss = -wealth
     var = np.quantile(loss, alpha)
     return tf.reduce_mean(loss[loss > var])
+
+
+def precise_mean(x, **kwargs):
+    return tf.cast(tf.reduce_mean(tf.cast(x, tf.float64)), x.dtype)

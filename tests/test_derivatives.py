@@ -41,6 +41,8 @@ class test_binary(unittest.TestCase):
 
 
 class test_barrier(unittest.TestCase):
+    # https://www.coggit.com/tools/barrier_option_pricing.html
+
     def setUp(self):
         self.maturity, self.strike, self.rate, self.volatility \
             = 1, 100, 0.05, 0.2
