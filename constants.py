@@ -3,7 +3,7 @@ import tensorflow as tf
 import numpy as np
 
 # == specify
-FLOAT_DTYPE = tf.float64
+FLOAT_DTYPE = tf.float32
 INT_DTYPE = tf.int32
 
 # ===

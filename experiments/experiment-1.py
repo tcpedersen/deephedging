@@ -2,6 +2,7 @@
 import tensorflow as tf
 
 from books import simple_put_call_book
+import utils
 import models
 
 # ==============================================================================
@@ -21,10 +22,9 @@ time, instruments, numeraire = book.sample_paths(
 # ==============================================================================
 # === setup model
 model = models.DeltaHedge(book, time, numeraire)
+model.compile(models.ExpectedShortfall(alpha))
 
-train = [instruments / numeraire,
-         instruments / numeraire,
-         book.payoff(instruments, numeraire)]
+train = utils.benchmark_input(time, instruments, numeraire, book)
 
 
 # ==============================================================================
@@ -33,14 +33,14 @@ train = [instruments / numeraire,
 
 value, _ = model(train)
 
-hedge_ratios = model.hedge_ratios(train)
+hedge_ratios = model.hedge_ratios(train)[0]
 initial_hedge_ratio = hedge_ratios[0, 0, 0]
 print(f"initial hedge ratio: {initial_hedge_ratio:.4f}, should be {0.5422283:.4f}.")
 
 price = book.value(time, instruments, numeraire)[0, 0]
 print(f"initial investment: {price * numeraire[0]:.4f}, should be {8.0214:.4f}.")
 
-payoff = tf.reduce_mean(book.payoff(instruments, numeraire) * numeraire[0])
+payoff = tf.reduce_mean(book.payoff(time, instruments, numeraire) * numeraire[0])
 print(f"average discounted option payoff: {payoff:.4f}, should be {11.0641:.4f}.")
 
 hedge_wealth = tf.reduce_mean((price + value) * numeraire[0])

@@ -165,7 +165,7 @@ class test_BlackScholesPutCallBook(TestCase):
             expected_dims = (num_steps + 1, )
             self.assertTupleEqual(tuple(numeraire.shape), expected_dims)
 
-            payoff = book.payoff(instruments, numeraire)
+            payoff = book.payoff(time, instruments, numeraire)
             self.assertTupleEqual(tuple(payoff.shape), (num_paths, ))
 
             price_result = tf.reduce_mean(payoff)

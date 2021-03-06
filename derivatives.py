@@ -7,12 +7,13 @@ from constants import FLOAT_DTYPE, INT_DTYPE
 
 class Derivative(abc.ABC):
     @abc.abstractmethod
-    def payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
+    def payoff(self, time: tf.Tensor, instrument: tf.Tensor, numeraire: tf.Tensor):
         """Computes payoff of derivative in terms of numeraire for each sample
         in batch
         Args:
-            instrument: (batch_size, time_steps + 1)
-            numeraire: (time_steps + 1, )
+            time: (timesteps + 1)
+            instrument: (batch_size, timesteps + 1)
+            numeraire: (timesteps + 1, )
         Returns:
             payoff: (batch_size, )
         """
@@ -24,11 +25,11 @@ class Derivative(abc.ABC):
         """Computes price of derivative in terms of numeraire for each sample
         in batch.
         Args:
-            time: (time_steps + 1, )
-            instrument: (batch_size, time_steps + 1)
-            numeraire: (time_steps + 1, )
+            time: (timesteps + 1, )
+            instrument: (batch_size, timesteps + 1)
+            numeraire: (timesteps + 1, )
         Returns:
-            value: (batch_size, time_steps + 1)
+            value: (batch_size, timesteps + 1)
         """
 
 
@@ -38,11 +39,11 @@ class Derivative(abc.ABC):
         """Computes the delta of the derivative in terms of numeraire for each
         sample in batch.
         Args:
-            time: (time_steps + 1, )
-            instrument: (batch_size, time_steps + 1)
-            numeraire: (time_steps + 1, )
+            time: (timesteps + 1, )
+            instrument: (batch_size, timesteps + 1)
+            numeraire: (timesteps + 1, )
         Returns:
-            delta: (batch_size, time_steps + 1)
+            delta: (batch_size, timesteps + 1)
         """
 
 
@@ -56,15 +57,14 @@ class PutCall(Derivative):
         self.theta = tf.convert_to_tensor(theta, FLOAT_DTYPE)
 
 
-    def payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
+    def payoff(self, time, instrument, numeraire):
         diff = self.theta * (instrument[..., -1] - self.strike)
         itm = tf.cast(diff > 0, FLOAT_DTYPE)
 
         return (diff * itm) / numeraire[-1]
 
 
-    def value(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
+    def value(self, time, instrument, numeraire):
         ttm = self.maturity - time
         raw_price = black_price(ttm, instrument, self.strike,
                                 self.rate, self.volatility, self.theta)
@@ -72,8 +72,7 @@ class PutCall(Derivative):
         return raw_price / numeraire
 
 
-    def delta(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
+    def delta(self, time, instrument, numeraire):
         ttm = self.maturity - time
         raw_delta = black_delta(ttm, instrument, self.strike,
                                 self.rate, self.volatility, self.theta)
@@ -88,7 +87,7 @@ class BinaryCall(Derivative):
         self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
 
 
-    def payoff(self, instrument, numeraire):
+    def payoff(self, time, instrument, numeraire):
         itm = tf.cast(instrument[..., -1] > self.strike, FLOAT_DTYPE)
         return itm / numeraire[-1]
 
@@ -134,7 +133,8 @@ class Barrier(Derivative, abc.ABC):
 
 
     @abc.abstractmethod
-    def raw_payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
+    def raw_payoff(self, time: tf.Tensor, instrument: tf.Tensor,
+                   numeraire: tf.Tensor):
         """Returns payoff of European type payoff in terms of numeriare."""
 
 
@@ -162,8 +162,8 @@ class Barrier(Derivative, abc.ABC):
         """Returns value of truncated up-contract in terms of numeraire."""
 
 
-    def payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
-        raw_payoff = self.raw_payoff(instrument, numeraire)
+    def payoff(self, time, instrument, numeraire):
+        raw_payoff = self.raw_payoff(time, instrument, numeraire)
         has_crossed = self.crossed(instrument)[..., -1]
 
         if self.outin == 1:
@@ -172,8 +172,7 @@ class Barrier(Derivative, abc.ABC):
             return tf.where(has_crossed, raw_payoff, 0.)
 
 
-    def value(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
+    def value(self, time, instrument, numeraire):
         if self.outin * self.updown == 1:
             standard = self.up_value(time, instrument, numeraire)
         else:
@@ -200,8 +199,7 @@ class Barrier(Derivative, abc.ABC):
         return tf.where(crossed, crossed_value, non_crossed_value)
 
 
-    def delta(self, time: tf.Tensor, instrument: tf.Tensor,
-              numeraire: tf.Tensor):
+    def delta(self, time, instrument, numeraire):
         if self.outin * self.updown == 1:
             standard_grad = self.up_delta(time, instrument, numeraire)
         else:
@@ -264,8 +262,9 @@ class BarrierCall(Barrier):
             maturity, self.barrier, self.volatility)
 
 
-    def raw_payoff(self, instrument: tf.Tensor, numeraire: tf.Tensor):
-        return self.strike_call.payoff(instrument, numeraire)
+    def raw_payoff(self, time: tf.Tensor, instrument: tf.Tensor,
+                   numeraire: tf.Tensor):
+        return self.strike_call.payoff(time, instrument, numeraire)
 
 
     def down_value(self, time: tf.Tensor, instrument: tf.Tensor,
@@ -299,19 +298,51 @@ class BarrierCall(Barrier):
         return self.strike_call.delta(time, instrument, numeraire) \
             - self.down_delta(time, instrument, numeraire)
 
+
+class GeometricAverage(Derivative):
+    def __init__(self, maturity, volatility):
+        self.maturity = maturity
+        self.volatility = volatility
+
+
+    def payoff(self, time, instrument, numeraire):
+        dt = time[1:] - time[:-1]
+
+        return tf.reduce_prod(instrument[..., :-1] ** dt, -1) / numeraire[-1]
+
+
+    def value(self, time, instrument, numeraire):
+        dt = time[1:] - time[:-1]
+        rate = tf.math.log(numeraire[-1]) / self.maturity
+        measurable = tf.math.cumprod(instrument[..., :-1] ** dt, -1)
+        padded = tf.pad(measurable, [[0, 0], [1, 0]], constant_values=1)
+
+        tau = self.maturity - time
+        expected = tf.exp(tau * tf.math.log(instrument) \
+            + (rate - self.volatility**2 / 2.) * tau**2 / 2. \
+                + self.volatility**2 * tau**3 / 6.)
+
+        return padded * expected / numeraire[-1]
+
+
+    def delta(self, time, instrument, numeraire):
+        tau = self.maturity - time
+
+        return self.value(time, instrument, numeraire) * tau / instrument
+
 # ==============================================================================
 # === Black Scholes
 def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
     """Returns price in Black's model.
     Args:
-        time_to_maturity: (time_steps + 1, )
-        spot: (batch_size, time_steps + 1)
+        time_to_maturity: (timesteps + 1, )
+        spot: (batch_size, timesteps + 1)
         strike: float
         rate: float
         volatility: float
         theta: float
     Returns:
-        price: (batch_size, time_steps + 1)
+        price: (batch_size, timesteps + 1)
     """
     deflator = tf.math.exp(-rate * time_to_maturity)
     forward = spot / deflator
@@ -332,7 +363,7 @@ def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
     Args:
         see black_price
     Returns:
-        delta: (batch_size, time_steps + 1)
+        delta: (batch_size, timesteps + 1)
     """
     deflator = tf.math.exp(-rate * time_to_maturity)
     forward = spot / deflator

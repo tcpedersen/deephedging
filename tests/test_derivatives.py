@@ -33,7 +33,7 @@ class test_binary(unittest.TestCase):
 
         price_result = binary.value(time, instrument, numeraire)
         delta_result = binary.delta(time, instrument, numeraire)
-        payoff_result = binary.payoff(instrument, numeraire)
+        payoff_result = binary.payoff(time, instrument, numeraire)
 
         assert_near(price_result, price_expected)
         assert_near(delta_result, delta_expected)
@@ -61,7 +61,7 @@ class test_barrier(unittest.TestCase):
             self.time, instrument, self.numeraire)
 
         payoff_expected = price_expected[..., -1]
-        payoff_result = binary.payoff(instrument, self.numeraire)
+        payoff_result = binary.payoff(self.time, instrument, self.numeraire)
 
         assert_near(price_result, price_expected, atol=1e-4)
         assert_near(delta_result[..., :-1], delta_expected[..., :-1])
