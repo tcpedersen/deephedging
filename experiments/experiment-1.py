@@ -7,7 +7,7 @@ import models
 
 # ==============================================================================
 # === hyperparameters
-num_train_paths, num_test_paths, time_steps = int(2**20), int(2**20), 30
+num_train_paths, num_test_paths, timesteps = int(2**18), int(2**18), 30
 alpha = 0.95
 
 
@@ -16,12 +16,12 @@ alpha = 0.95
 init_instruments, init_numeraire, book = simple_put_call_book(
     1., 100., 105., 0.05, 0.1, 0.2, 1.)
 time, instruments, numeraire = book.sample_paths(
-    init_instruments, init_numeraire, num_train_paths, time_steps, False)
+    init_instruments, init_numeraire, num_train_paths, timesteps, False)
 
 
 # ==============================================================================
 # === setup model
-model = models.DeltaHedge(book, time, numeraire)
+model = models.DeltaHedge(timesteps, 1)
 model.compile(models.ExpectedShortfall(alpha))
 
 train = utils.benchmark_input(time, instruments, numeraire, book)

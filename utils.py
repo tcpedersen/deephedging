@@ -2,6 +2,7 @@
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 from scipy.special import erfinv
 from tensorflow_probability.python.internal import special_math
@@ -53,50 +54,6 @@ class PeakSchedule:
             return self.a
 
 
-class MeanVarianceNormaliser:
-    def fit(self, x):
-        '''Fit normaliser to data.
-        Args:
-            x: (batch_size, information_dim, num_steps + 1)
-        '''
-
-        # major numerical imprecision in reduce_mean for tf.float32,
-        # so convert to tf.float64 before calculating moments.
-        self.mean, self.variance = tf.nn.moments(tf.cast(x, np.float64), 0)
-        self.eps = tf.constant(0., tf.float64)
-
-    def transform(self, x):
-        '''Normalize data.
-        Args:
-            x: see LinearNormalizer.fit
-        Returns:
-            y: same as input.
-        '''
-        xc = tf.cast(x, tf.float64)
-        yc = tf.nn.batch_normalization(
-            xc, self.mean, self.variance, None, None, self.eps)
-        yc = tf.where(tf.equal(self.variance, 0), 0., yc)
-
-        return tf.cast(yc, FLOAT_DTYPE)
-
-    def fit_transform(self, x):
-        self.fit(x)
-        return self.transform(x)
-
-    def inverse_transform(self, y):
-        '''Normalize data.
-        Args:
-            y: see LinearNormalizer.fit
-        Returns:
-            x: same as input.
-        '''
-        yc = tf.cast(y, tf.float64)
-        xc = tf.sqrt(self.variance + self.eps) * yc + self.mean
-        xc = tf.where(tf.equal(self.variance, 0.), self.mean, xc)
-
-        return tf.cast(xc, FLOAT_DTYPE)
-
-
 # ==============================================================================
 # === other
 def expected_shortfall(wealth, alpha):
@@ -112,111 +69,284 @@ def precise_mean(x, **kwargs):
 
 # ==============================================================================
 # === experiments
-def hedge_model_input(time, instruments, numeraire, book):
-    information = tf.math.log(instruments / numeraire)
-    martingales = instruments / numeraire
-    payoff = book.payoff(time, instruments, numeraire)
+class Driver(object):
+    def __init__(self,
+                 timesteps,
+                 frequency,
+                 init_instruments,
+                 init_numeraire,
+                 book,
+                 cost,
+                 risk_neutral):
+        self.timesteps = timesteps
+        self.frequency = frequency
+        self.init_instruments = init_instruments
+        self.init_numeraire = init_numeraire
+        self.book = book
+        self.cost = cost
+        self.risk_neutral = risk_neutral
 
-    return [information, martingales, payoff]
+        self.learning_rate = 1e-2
+        self.optimizer = tf.keras.optimizers.Adam
 
+        early_stopping = tf.keras.callbacks.EarlyStopping(
+            monitor="loss",
+            patience=10,
+            min_delta=1e-4,
+            restore_best_weights=True
+        )
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="loss",
+            verbose=1,
+            patience=2
+        )
 
-def benchmark_input(time, instruments, numeraire, book):
-    information = instruments / numeraire
-    martingales = instruments / numeraire
-    payoff = book.payoff(time, instruments, numeraire)
-
-    return [information, martingales, payoff]
-
-
-def no_liability_input(time, instruments, numeraire, book):
-    information, martingales, payoff = hedge_model_input(
-        time, instruments, numeraire, book)
-
-    return [information, martingales, tf.zeros_like(payoff)]
-
-
-def train_model(model, inputs, alpha, normalise=True):
-    # normalise data
-    normaliser = MeanVarianceNormaliser()
-    norm_information = normaliser.fit_transform(inputs[0]) if normalise else inputs[0]
-    norm_inputs = [norm_information, inputs[1], inputs[2]]
-
-    # compile model
-    risk_measure = models.ExpectedShortfall(alpha)
-    optimizer = tf.keras.optimizers.Adam(1e-1)
-    model.compile(risk_measure, optimizer=optimizer)
-
-    # define callbacks
-    batch_size, epochs = 2**10, 100
-
-    early_stopping = tf.keras.callbacks.EarlyStopping(
-        monitor="loss", patience=10, min_delta=1e-4, restore_best_weights=True)
-    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
-        monitor="loss", verbose=1, patience=2)
-
-    callbacks = [early_stopping, reduce_lr]
-
-    # train
-    history = model.fit(norm_inputs,
-                        batch_size=batch_size,
-                        epochs=epochs,
-                        callbacks=callbacks)
-
-    return history, norm_inputs, normaliser
+        self.callbacks = [early_stopping, reduce_lr]
+        self.testcases = []
+        self.liability_free = None
 
 
-def test_model(model, inputs, normaliser=None):
-    # normalise data
-    if normaliser is not None:
-        norm_information =  normaliser.transform(inputs[0])
-    else:
-        norm_information = inputs[0]
-    norm_inputs = [norm_information, inputs[1], inputs[2]]
+    def sample(self, size):
+        time, instruments, numeraire = self.book.sample_paths(
+            self.init_instruments,
+            self.init_numeraire,
+            size,
+            self.timesteps * self.frequency,
+            self.risk_neutral)
 
-    # test model
-    value, costs = model(norm_inputs)
-    risk = model.risk_measure(value - costs - inputs[2])
-
-    return norm_inputs, risk
+        return time, instruments, numeraire
 
 
-def plot_distributions(models, inputs, prices):
-    data = []
-    for model, input, price in zip(models, inputs, prices):
-        value, costs = model(input)
-        wealth = price + value - costs - input[2]
-        data.append([value, costs, wealth])
-
-    sample_size = min(250000, len(value))
-
-    # wealth
-    plt.figure()
-    for value, costs, wealth in data:
-        plot_data = np.random.choice(wealth, sample_size, replace=False)
-        plt.hist(plot_data, bins=250, density=True, alpha=0.5)
-    plt.show()
-
-    # value
-    plt.figure()
-    for value, costs, wealth in data:
-        plot_data = np.random.choice(value, sample_size, replace=False)
-        plt.hist(plot_data, bins=250, density=True, alpha=0.5)
-    plt.show()
-
-    # costs
-    # plt.figure()
-    # for value, costs, wealth in data:
-    #     plot_data = np.random.choice(costs, 250000, replace=False)
-    #     plt.hist(plot_data, bins=250, density=True, alpha=0.5)
-    # plt.show()
-
-    return data
+    def validate_feature_type(self, feature_type):
+        valid_feature_types = ["log_martingale", "delta"]
+        assert feature_type in valid_feature_types, \
+            f"feature_type '{feature_type}' not in {valid_feature_types}"
 
 
-def plot_barrier_payoff(model, norm_inputs, price, instruments, numeraire, book):
+    def validate_price_type(self, price_type):
+        valid_price_types = ["indifference", "arbitrage"]
+        assert price_type in valid_price_types, \
+            f"price_type '{price_type}' not in {valid_price_types}"
+
+
+    def add_testcase(self,
+                     name,
+                     model,
+                     risk_measure,
+                     normaliser,
+                     feature_type,
+                     price_type):
+        self.validate_feature_type(feature_type)
+        self.validate_price_type(price_type)
+
+        assert issubclass(type(model), models.Hedge)
+        assert issubclass(type(risk_measure), models.OCERiskMeasure)
+
+        self.testcases.append(
+            {"name": str(name),
+             "model": model,
+             "risk_measure": risk_measure,
+             "normaliser": normaliser,
+             "feature_type": feature_type,
+             "price_type": price_type,
+             "trained": False,
+             "tested": False}
+            )
+
+
+    def add_liability_free(self, model, risk_measure, normaliser, feature_type):
+        self.validate_feature_type(feature_type)
+        assert issubclass(type(model), models.Hedge)
+        assert issubclass(type(risk_measure), models.OCERiskMeasure)
+
+        self.liability_free = {"model": model,
+                               "risk_measure": risk_measure,
+                               "normaliser": normaliser,
+                               "feature_type": feature_type,
+                               "trained": False,
+                               "tested": False}
+
+
+    def normalise_features(self, case):
+        return case["feature_type"] not in ["delta"]
+
+
+    def get_input(self, case, raw_data):
+        time, instruments, numeraire = raw_data
+
+        if case["feature_type"] == "log_martingale":
+            features = tf.math.log(instruments / numeraire)
+        elif case["feature_type"] == "delta":
+            features = self.book.delta(time, instruments, numeraire) * numeraire
+        else:
+            message = f"feature_type '{case['feature_type']}' is not valid."
+            raise NotImplementedError(message)
+
+        if case["normaliser"] is not None:
+             if not case["trained"]:
+                 case["normaliser"].fit(features)
+             features = case["normaliser"].transform(features)
+
+        martingales = instruments / numeraire
+        payoff = self.book.payoff(time, instruments, numeraire)
+
+        return [features, martingales, payoff]
+
+
+    @tf.function
+    def get_risk(self, case, input_data):
+        value, costs = case["model"](input_data)
+        wealth = value - costs - input_data[-1]
+
+        return value, costs, wealth, case["model"].risk_measure(wealth)
+
+
+    def train_case(self, case, input_data, **kwargs):
+        if self.cost is not None:
+            case["model"].add_cost_layers(self.cost)
+
+        optimizer = self.optimizer(self.learning_rate)
+        case["model"].compile(case["risk_measure"],
+                              optimizer=optimizer)
+
+        case["history"] = case["model"].fit(
+            input_data, callbacks=self.callbacks, **kwargs)
+        case["trained"] = True
+
+        case["train_risk"] = self.get_risk(case, input_data)[-1]
+
+
+    def train(self, sample_size, epochs, batch_size):
+        raw_data = self.sample(sample_size)
+
+        for case in self.testcases:
+            input_data = self.get_input(case, raw_data)
+            self.train_case(case, input_data,
+                            batch_size=batch_size,
+                            epochs=epochs)
+
+        if self.liability_free is not None:
+            input_data = self.get_input(self.liability_free, raw_data)
+            input_data[-1] = tf.zeros_like(input_data[-1])
+            self.train_case(self.liability_free, input_data,
+                            batch_size=batch_size,
+                            epochs=epochs)
+
+
+    def test_case(self, case, input_data):
+        value, costs, wealth, risk = self.get_risk(case, input_data)
+        case["test_value"] = precise_mean(value)
+        case["test_costs"] = precise_mean(costs)
+        case["test_wealth"] = precise_mean(wealth)
+        case["test_risk"] = risk
+
+        case["tested"] = True
+
+
+    def assert_case_is_trained(self, case):
+        assert case["trained"], f"case '{case['name']}' is not trained yet."
+
+
+    def assert_case_is_tested(self, case):
+        assert case["tested"], f"case '{case['name']}' is not tested yet."
+
+
+    def assert_all_trained(self):
+        for case in self.testcases:
+            self.assert_case_is_trained(case)
+
+
+    def assert_all_tested(self):
+        for case in self.testcases:
+            self.assert_case_is_tested(case)
+
+
+    def test(self, sample_size):
+        self.assert_all_trained()
+
+        raw_data = self.sample(sample_size)
+        for case in self.testcases:
+            input_data = self.get_input(case, raw_data)
+            self.test_case(case, input_data)
+
+        if self.liability_free is not None:
+            input_data = self.get_input(self.liability_free, raw_data)
+            input_data[-1] = tf.zeros_like(input_data[-1])
+            self.test_case(self.liability_free, input_data)
+
+
+    def get_price(self, case):
+        self.assert_case_is_trained(case)
+        self.assert_case_is_tested(case)
+
+        time, instruments, numeraire = self.sample(1)
+
+        if case["price_type"] == "arbitrage":
+            return self.book.value(time, instruments, numeraire)[0, 0]
+        elif case["price_type"] == "indifference":
+            if self.cost is None and self.risk_neutral:
+                liability_free_risk = 0.
+            else:
+                liability_free_risk = self.liability_free["test_risk"]
+
+            case_risk = case["test_risk"]
+            return numeraire[0] * (case_risk - liability_free_risk)
+
+
+    def test_summary(self):
+        self.assert_all_tested()
+
+        block_size = 17
+        case_size = max([len(case["name"]) for case in self.testcases]) + 1
+
+        header_titles = ["value", "costs", "wealth",
+                         "risk (train)", "risk (test)", "price"]
+        header = "".rjust(case_size) + "".join(
+            [ht.rjust(block_size) for ht in header_titles])
+        body = ""
+        print_keys = ["test_value", "test_costs", "test_wealth",
+                      "train_risk", "test_risk"]
+
+        for case in self.testcases:
+            body += case["name"].ljust(case_size)
+            for val in [case[key] for key in print_keys]:
+                body += f"{val:.4f}".rjust(block_size)
+
+            price = self.get_price(case)
+            body += f"{price: .4f}".rjust(block_size)
+
+            body += "\n"
+
+        print(header + "\n" + body)
+
+
+    def plot_distributions(self):
+        self.assert_all_tested()
+        raw_data = self.sample(int(2**18))
+
+        v, c, w = [], [], []
+        for case in self.testcases:
+            input_data = self.get_input(case, raw_data)
+            value, costs, wealth, risk = self.get_risk(case, input_data)
+            v.append(value)
+            c.append(costs)
+            w.append(wealth)
+
+        plot_data = [v, c, w] if self.cost is not None else [v, w]
+        for lst in plot_data:
+            plt.figure()
+            for data in lst:
+                sns.distplot(data.numpy(), hist=False,
+                             kde_kws={'shade': True, 'linewidth': 3})
+            plt.legend([case["name"] for case in self.testcases])
+            plt.show()
+
+
+def plot_barrier_payoff(
+        model, norm_inputs, price, time, instruments, numeraire, book):
     derivative = book.derivatives[0]["derivative"]
     crossed = tf.squeeze(tf.reduce_any(derivative.crossed(instruments), 2))
-    payoff = book.payoff(instruments, numeraire)
+    payoff = book.payoff(time, instruments, numeraire)
     xlim = (tf.reduce_min(instruments[:, 0, -1]),
             tf.reduce_max(instruments[:, 0, -1]))
 
@@ -236,3 +366,10 @@ def plot_barrier_payoff(model, norm_inputs, price, instruments, numeraire, book)
         plt.scatter(x, y2, s=0.5)
         plt.plot(x, y1, color="black")
         plt.show()
+
+
+def plot_correlation_matrix(corr):
+    plt.figure()
+    plt.matshow(corr)
+    plt.colorbar()
+    plt.show()

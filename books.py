@@ -168,7 +168,7 @@ def random_black_scholes_parameters(
     scale = tf.cast(tf.sqrt(float(num_brownian_motions)), FLOAT_DTYPE)
     diffusion = tf.random.uniform(
         (instrument_dim, num_brownian_motions),
-        0.1 / scale, 0.3 / scale, FLOAT_DTYPE)
+        - 0.4 / scale, 0.4 / scale, FLOAT_DTYPE)
 
     init_instruments = uniform((instrument_dim, ), 95, 105, FLOAT_DTYPE)
     init_numeraire = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)

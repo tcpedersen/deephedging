@@ -8,16 +8,21 @@ import utils
 
 # ==============================================================================
 # === hyperparameters
-batch_size, time_steps = int(2**16), 30
+batch_size, timesteps = int(2**16), 7
+num_hedges_per_day = 4
 alpha = 0.95
 
 
 # ==============================================================================
 # === sample data
-init_instruments, init_numeraire, book = books.random_geometric_asian_book(
-    time_steps / 250, 1, 1, 1, 69)
+init_instruments, init_numeraire, book = books.random_barrier_book(
+    timesteps / 250, 1, 1, 1, 72)
 time, instruments, numeraire = book.sample_paths(
-    init_instruments, init_numeraire, batch_size, time_steps * 20, False)
+    init_instruments,
+    init_numeraire,
+    batch_size,
+    timesteps * num_hedges_per_day,
+    True)
 
 
 # ==============================================================================
@@ -30,6 +35,12 @@ train = utils.benchmark_input(time, instruments, numeraire, book)
 
 # ==============================================================================
 # ====
+
+# improves speed
+@tf.function
+def run(x):
+    return model(x)
+
 value, _ = model(train)
 
 price = book.value(time, instruments, numeraire)[0, 0]
@@ -45,3 +56,12 @@ print(f"average discounted portfolio value: {hedge_wealth:.4f}.")
 # === visualize
 utils.plot_distributions([model], [train], [price])
 
+utils.plot_barrier_payoff(
+        model,
+        train,
+        price,
+        time,
+        instruments,
+        numeraire,
+        book
+    )

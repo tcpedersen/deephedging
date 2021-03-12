@@ -7,6 +7,68 @@ from tensorflow.debugging import assert_near
 import derivatives
 from constants import FLOAT_DTYPE
 
+class test_putcall(unittest.TestCase):
+    def test_call_value_delta(self):
+        maturity, strike, rate, volatility, theta = 0.25, 90, 0.05, 0.2, 1
+        putcall = derivatives.PutCall(maturity, strike, rate, volatility, theta)
+
+        time = tf.constant([0, 0.1, 0.25], FLOAT_DTYPE)
+        instrument = tf.constant([[100, 110,  91],
+                                  [100., 121, 85]], FLOAT_DTYPE)
+        numeraire = tf.math.exp(rate * time)
+
+        price_expected = tf.constant([
+            [11.670086691861101, 20.680949336572269, 1.],
+            [11.670086691861101, 31.672557545579522, 0.]
+            ]) / numeraire
+
+        delta_expected = tf.constant([
+            [0.89039005940552085, 0.99679661077351212, 1.],
+            [0.89039005940552085, 0.99996199608869929, 0.]
+            ]) / numeraire
+
+        payoff_expected = price_expected[..., -1]
+
+        price_result = putcall.value(time, instrument, numeraire)
+        delta_result = putcall.delta(time, instrument, numeraire)
+        payoff_result = putcall.payoff(time, instrument, numeraire)
+
+        assert_near(price_result, price_expected)
+        assert_near(delta_result, delta_expected)
+        assert_near(payoff_result, payoff_expected)
+
+
+    @unittest.skip("tensorflow too imprecise.")
+    def test_put_value_delta(self):
+        maturity, strike, rate, volatility, theta = 1.3, 110, 0.02, 0.05, -1
+        putcall = derivatives.PutCall(maturity, strike, rate, volatility, theta)
+
+        time = tf.constant([0, 0.41, 1.3], FLOAT_DTYPE)
+        instrument = tf.constant([[100, 110,  120],
+                                  [110., 121, 85]], FLOAT_DTYPE)
+        numeraire = tf.math.exp(rate * time)
+
+        price_expected = tf.constant([
+            [7.4973075500600146, 1.2255281792756278, 0.],
+            [1.3101071219942781, 0.014761684729265312, 25.]
+            ]) / numeraire
+
+        delta_expected = tf.constant([
+            [-0.88244073147661295, -0.3442306041250397, 0.],
+            [-0.31398908314745166, -0.0077279609756593093, -1]
+            ]) / numeraire
+
+        payoff_expected = price_expected[..., -1]
+
+        price_result = putcall.value(time, instrument, numeraire)
+        delta_result = putcall.delta(time, instrument, numeraire)
+        payoff_result = putcall.payoff(time, instrument, numeraire)
+
+        assert_near(price_result, price_expected)
+        assert_near(delta_result, delta_expected)
+        assert_near(payoff_result, payoff_expected)
+
+
 class test_binary(unittest.TestCase):
     def test_value_delta(self):
         # https://www.math.drexel.edu/~pg/fin/VanillaCalculator.html

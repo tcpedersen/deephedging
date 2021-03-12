@@ -3,7 +3,7 @@ import tensorflow as tf
 import abc
 
 from tensorflow.keras.layers import Dense, BatchNormalization
-from tensorflow.keras.activations import relu, elu
+from tensorflow.keras.activations import relu
 
 from constants import FLOAT_DTYPE
 
@@ -70,36 +70,87 @@ class DenseStrategy(Strategy):
         for dense, batch in zip(self.dense_layers, self.batch_layers):
             inputs = dense(inputs)
             inputs = batch(inputs, training=training)
-            inputs = elu(inputs) # TODO change to relu?
+            inputs = relu(inputs)
         output = self.output_layer(inputs)
 
         return output
 
 
-class DeltaStrategy(Strategy):
-    def __init__(self, book, **kwargs):
-        super().__init__(book.instrument_dim, 0, trainable=False)
-        self.book = book
+class FeatureStrategy(Strategy):
+    def __init__(self, instrument_dim, **kwargs):
+        super().__init__(instrument_dim, 0, trainable=False)
 
 
     def _call(self, inputs, training=False):
         """Implementation of call for Strategy.
         Args:
-            inputs: [time, martingales, numeraire]
-                step: int
-                time: (timesteps + 1, )
-                martingales: (batch_size, instrument_dim, timesteps + 1)
-                numeraire: (timesteps + 1, )
+            inputs: features (batch_size, instrument_dim)
             training: bool (not used)
         Returns:
             output: see Strategy._call
         """
-        step, time, martingales, numeraire = inputs
-        instruments = martingales * numeraire
 
-        discounted_delta = self.book.delta(time, instruments, numeraire)
+        return inputs
 
-        return discounted_delta[..., step] * numeraire[step]
+
+class IdentityFeatureMap(tf.keras.layers.Layer):
+    def call(self, inputs, training=False):
+        return inputs
+
+
+class GaussianFeatureMap(tf.keras.layers.Layer):
+    def build(self, input_shape):
+        shape = (input_shape[-1], )
+        self.center = self.add_weight(
+            shape=shape, initializer="glorot_uniform", trainable=True)
+        self.scale = self.add_weight(
+            shape=shape,
+            initializer=tf.keras.initializers.constant(1 / 2),
+            trainable=True)
+        super().build(input_shape)
+
+
+    def call(self, inputs, training=False):
+        centered = inputs[..., tf.newaxis] - self.center
+
+        return tf.exp(- self.scale * tf.reduce_sum(tf.square(centered), 1))
+
+
+class LinearFeatureStrategy(Strategy):
+    def __init__(self, instrument_dim, mappings, **kwargs):
+        super().__init__(instrument_dim, 0, **kwargs)
+
+        self.mappings = [mapping() for mapping in mappings]
+        self.bias = self.add_weight(shape=(instrument_dim, ),
+                                    initializer="zeros",
+                                    trainable=True)
+
+
+    def build(self, input_shape):
+        self.kernels = []
+        for shape in input_shape:
+            kernel = self.add_weight(shape=(shape[-1], ),
+                                     initializer="glorot_uniform",
+                                     trainable=True)
+            self.kernels.append(kernel)
+
+        assert len(self.kernels) == len(self.mappings), \
+            "length of kernels and mappings unequal: " \
+                + f"{len(self.kernels)} != {len(self.mappings)}"
+
+        super().build(input_shape)
+
+
+    def _call(self, inputs, training=False):
+        """Implementation of call for Strategy.
+        Args / Returns:
+            see FeatureStrategy._call
+        """
+        output = 0.
+        for feature, kernel, mapping in zip(inputs, self.kernels, self.mappings):
+            output += tf.multiply(kernel, mapping(feature))
+
+        return output + self.bias
 
 
 # ==============================================================================
@@ -130,7 +181,6 @@ class Hedge(tf.keras.models.Model, abc.ABC):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._cost_layers = []
-        self.append_hedge_to_observation = False
 
 
     @property
@@ -157,8 +207,6 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 
         for _ in range(self.timesteps):
             self._cost_layers.append(ProportionalCost(float(cost)))
-
-        self.append_hedge_to_observation = True
 
 
     def compile(self, risk_measure, **kwargs):
@@ -187,22 +235,13 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 
 
     @abc.abstractmethod
-    def _observation(self, step, features, internal) -> tf.Tensor:
+    def observation(self, step, features, hedge, internal) -> tf.Tensor:
         """Returns the input to the strategy layers.
         Args:
             see Hedge.call
         Returns:
             input: (batch_size, )
         """
-
-
-    def observation(self, step, features, hedge, internal):
-        """Appends the hedge ratios if transaction costs are present."""
-        user = self._observation(step, features, internal)
-        if self.append_hedge_to_observation:
-            return tf.concat([user, hedge], 1)
-
-        return user
 
 
     def costs(self, step, new_hedge, old_hedge, martingales):
@@ -280,29 +319,48 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 # ==============================================================================
 # === DeltaHedge
 class DeltaHedge(Hedge):
-    def __init__(self, book, time, numeraire, **kwargs):
+    def __init__(self, timesteps, instrument_dim, **kwargs):
         super().__init__(**kwargs)
-        self.book = book
-        self.time = time
-        self.numeraire = numeraire
 
-        self._strategy_layers = [DeltaStrategy(book)] * (len(self.time) - 1)
+        self._strategy_layers = [FeatureStrategy(instrument_dim)] * timesteps
 
-
-    def add_cost_layers(self, cost):
-        super().add_cost_layers(cost)
-        self.append_hedge_to_observation = False
 
     @property
     def strategy_layers(self) -> list:
         return self._strategy_layers
 
 
-    def _observation(self, step, features, internal) -> tf.Tensor:
+    def observation(self, step, features, hedge, internal) -> tf.Tensor:
         """Implementation of observation for Hedge. Note features must be
-        martingales.
+        hedge ratios.
         """
-        return [step, self.time, features, self.numeraire]
+        return features[..., step]
+
+
+class LinearFeatureHedge(Hedge):
+    def __init__(self, timesteps, instrument_dim, mappings, **kwargs):
+        super().__init__(**kwargs)
+
+        self._strategy_layers = []
+        for _ in range(timesteps):
+            self._strategy_layers.append(
+                LinearFeatureStrategy(instrument_dim, mappings))
+
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
+
+
+    def observation(self, step, features, hedge, internal) -> tf.Tensor:
+        """Implementation of observation for Hedge. Note features must be
+        hedge ratios.
+        """
+        observation = [features[..., step]]
+
+        if self.cost_layers:
+            observation += [hedge]
+
+        return observation
 
 
 # ==============================================================================
@@ -312,8 +370,9 @@ class SimpleHedge(Hedge):
             self, timesteps, instrument_dim, num_layers, num_units, **kwargs):
         super().__init__(**kwargs)
 
-        self._strategy_layers = []
-        for _ in range(timesteps):
+        self._strategy_layers = [DenseStrategy(
+                instrument_dim, 1, instrument_dim)]
+        for _ in range(timesteps - 1):
             self._strategy_layers.append(DenseStrategy(
                 instrument_dim, num_layers, num_units))
 
@@ -323,8 +382,13 @@ class SimpleHedge(Hedge):
         return self._strategy_layers
 
 
-    def _observation(self, step, features, internal) -> tf.Tensor:
-        return features[..., step]
+    def observation(self, step, features, hedge, internal) -> tf.Tensor:
+        observation = features[..., step]
+
+        if self.cost_layers:
+            observation = tf.concat([observation, hedge], 1)
+
+        return observation
 
 
 # ==============================================================================
@@ -339,8 +403,9 @@ class MemoryHedge(Hedge):
                  **kwargs):
         super().__init__(**kwargs)
 
-        self._strategy_layers = []
-        for _ in range(timesteps):
+        self._strategy_layers = [DenseStrategy(
+                instrument_dim, 1, num_units, internal_dim)]
+        for _ in range(timesteps - 1):
             self._strategy_layers.append(DenseStrategy(
                 instrument_dim, num_layers, num_units, internal_dim))
 
@@ -349,8 +414,14 @@ class MemoryHedge(Hedge):
     def strategy_layers(self) -> list:
         return self._strategy_layers
 
-    def _observation(self, step, features, internal) -> tf.Tensor:
-        return tf.concat([features[..., step], internal], 1)
+
+    def observation(self, step, features, hedge, internal) -> tf.Tensor:
+        observation = tf.concat([features[..., step], internal], 1)
+
+        if self.cost_layers:
+            observation = tf.concat([observation, hedge], 1)
+
+        return observation
 
 
 # =============================================================================
@@ -378,8 +449,18 @@ class EntropicRisk(OCERiskMeasure):
         self.aversion = float(risk_aversion)
 
 
+    def __call__(self, x: tf.Tensor):
+        redundant = tf.square(self.w) # to ensure w = 0 in optimum.
+        batch_size = tf.cast(tf.shape(x)[0], FLOAT_DTYPE)
+
+        return (tf.math.reduce_logsumexp(-self.aversion * x) \
+            - tf.math.log(batch_size)) / self.aversion + redundant
+
+
     def loss(self, x):
-        return tf.exp(self.aversion * x) - (1. + tf.math.log(self.aversion)) \
+        # clip as tf.exp will otherwise overflow.
+        xc = tf.clip_by_value(x, x.dtype.min, tf.math.log(FLOAT_DTYPE.max) / self.aversion - 1.)
+        return tf.math.exp(self.aversion * xc) - (1. + tf.math.log(self.aversion)) \
             / self.aversion
 
 
