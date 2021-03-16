@@ -23,15 +23,15 @@ class Simulator(abc.ABC):
         return len(self.correlation)
 
 
-    def rvs(self, batch_size, time_steps):
+    def rvs(self, batch_size, timesteps):
         """Returns samples of normal random variables with correlation matrix.
         Args:
             batch_size: int
-            time_steps: int
+            timesteps: int
         Returns:
-            rvs: (batch_size, time_steps, dimension)
+            rvs: (batch_size, timesteps, dimension)
         """
-        size = (batch_size, time_steps)
+        size = (batch_size, timesteps)
         loc = tf.zeros((self.dimension, ), FLOAT_DTYPE)
         rvs = np.random.multivariate_normal(loc, self.correlation, size)
 
@@ -50,24 +50,32 @@ class Simulator(abc.ABC):
         """
 
 
-    def simulate(self, time, init_state, batch_size, risk_neutral):
+    def simulate(self, time, init_state, batch_size, risk_neutral,
+                 as_list=False):
         """Simulates paths.
         Args:
             time: (time_steps + 1, )
-            init_state: (dimension, )
+            init_state: (dimension, ) or (batch_size, dimension)
             batch_size: int
             risk_neutral: bool
         Returns:
-            paths: (batch_size, state_dim, num_steps + 1)
+            paths: (batch_size, state_dim, timesteps + 1)
         """
         increment = time[1:] - time[:-1]
         rvs = self.rvs(batch_size, len(time) - 1)
-        paths = [tf.tile(init_state[tf.newaxis, :], (batch_size, 1))]
+
+        if tf.equal(len(tf.shape(init_state)), 1):
+            paths = [tf.tile(init_state[tf.newaxis, :], (batch_size, 1))]
+        elif tf.equal(len(tf.shape(init_state)), 2):
+            paths = [init_state]
+        else:
+            raise ValueError("dimension of init_state > 2.")
 
         for idx, dt in enumerate(increment):
-            paths.append(self.advance(paths[-1], rvs[:, idx, :], dt, risk_neutral))
+            paths.append(
+                self.advance(paths[-1], rvs[:, idx, :], dt, risk_neutral))
 
-        return tf.transpose(tf.stack(paths, 1), [0, 2, 1])
+        return paths if as_list else tf.stack(paths, 2)
 
 
 class GBM(Simulator):

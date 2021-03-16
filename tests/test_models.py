@@ -15,10 +15,12 @@ class test_OCERiskMeasure(unittest.TestCase):
         var = alpha
         risk_measure.w.assign(var)
 
-        result = risk_measure(-loss)
+        result_fitted = risk_measure(-loss)
+        result_evaluate = risk_measure.evaluate(-loss)
         expected = tf.constant([(1 + var) / 2.], FLOAT_DTYPE)
 
-        tf.debugging.assert_near(result, expected, atol=1e-3)
+        tf.debugging.assert_near(result_fitted, expected, atol=1e-3)
+        tf.debugging.assert_near(result_evaluate, expected, atol=1e-3)
 
 
     def test_EntropicRisk(self):

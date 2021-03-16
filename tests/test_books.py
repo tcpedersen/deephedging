@@ -115,6 +115,21 @@ class test_BlackScholesPutCallBook(TestCase):
             assert_near(price_result, price_expected, atol=1e-1)
 
 
+    def test_gradient_payoff(self):
+        strike = 105
+        init_instruments, init_numeraire, book = simple_put_call_book(
+            1., 100., strike, 0.05, 0.1, 0.2, 1.)
+        batch_size, timesteps = 10, 5
+
+        _, instruments, numeraire, _, result = book.gradient_payoff(
+            init_instruments, init_numeraire, batch_size, timesteps, True)
+
+        itm = tf.cast(instruments[..., -1] > strike, FLOAT_DTYPE)
+        expected = (instruments[..., -1] / instruments[:, 0, :]) / numeraire[-1] * itm
+
+        assert_near(result[:, 0, :], expected)
+
+
 class test_random_books(TestCase):
     def test_random_barrier_book(self):
         init_instruments, init_numeraire, book = random_barrier_book(

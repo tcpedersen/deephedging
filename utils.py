@@ -8,7 +8,7 @@ from scipy.special import erfinv
 from tensorflow_probability.python.internal import special_math
 
 from constants import FLOAT_DTYPE_EPS, FLOAT_DTYPE
-import models
+import hedge_models
 
 ONE_OVER_SQRT_TWO_PI = 1. / tf.sqrt(2. * np.pi)
 SQRT_TWO = tf.sqrt(2.)
@@ -56,13 +56,6 @@ class PeakSchedule:
 
 # ==============================================================================
 # === other
-def expected_shortfall(wealth, alpha):
-    """Emperical expected shortfall."""
-    loss = -wealth
-    var = np.quantile(loss, alpha)
-    return tf.reduce_mean(loss[loss > var])
-
-
 def precise_mean(x, **kwargs):
     return tf.cast(tf.reduce_mean(tf.cast(x, tf.float64)), x.dtype)
 
@@ -76,8 +69,9 @@ class Driver(object):
                  init_instruments,
                  init_numeraire,
                  book,
-                 cost,
-                 risk_neutral):
+                 cost=None,
+                 risk_neutral=False,
+                 learning_rate=1e-2):
         self.timesteps = timesteps
         self.frequency = frequency
         self.init_instruments = init_instruments
@@ -86,7 +80,7 @@ class Driver(object):
         self.cost = cost
         self.risk_neutral = risk_neutral
 
-        self.learning_rate = 1e-2
+        self.learning_rate = float(learning_rate)
         self.optimizer = tf.keras.optimizers.Adam
 
         early_stopping = tf.keras.callbacks.EarlyStopping(
@@ -139,8 +133,11 @@ class Driver(object):
         self.validate_feature_type(feature_type)
         self.validate_price_type(price_type)
 
-        assert issubclass(type(model), models.Hedge)
-        assert issubclass(type(risk_measure), models.OCERiskMeasure)
+        assert issubclass(type(model), hedge_models.Hedge)
+        assert issubclass(type(risk_measure), hedge_models.OCERiskMeasure)
+
+        if self.cost is not None:
+            model.add_cost_layers(self.cost)
 
         self.testcases.append(
             {"name": str(name),
@@ -156,8 +153,8 @@ class Driver(object):
 
     def add_liability_free(self, model, risk_measure, normaliser, feature_type):
         self.validate_feature_type(feature_type)
-        assert issubclass(type(model), models.Hedge)
-        assert issubclass(type(risk_measure), models.OCERiskMeasure)
+        assert issubclass(type(model), hedge_models.Hedge)
+        assert issubclass(type(risk_measure), hedge_models.OCERiskMeasure)
 
         self.liability_free = {"model": model,
                                "risk_measure": risk_measure,
@@ -193,18 +190,14 @@ class Driver(object):
         return [features, martingales, payoff]
 
 
-    @tf.function
     def get_risk(self, case, input_data):
         value, costs = case["model"](input_data)
         wealth = value - costs - input_data[-1]
 
-        return value, costs, wealth, case["model"].risk_measure(wealth)
+        return value, costs, wealth, case["model"].risk_measure.evaluate(wealth)
 
 
     def train_case(self, case, input_data, **kwargs):
-        if self.cost is not None:
-            case["model"].add_cost_layers(self.cost)
-
         optimizer = self.optimizer(self.learning_rate)
         case["model"].compile(case["risk_measure"],
                               optimizer=optimizer)
@@ -254,25 +247,30 @@ class Driver(object):
     def assert_all_trained(self):
         for case in self.testcases:
             self.assert_case_is_trained(case)
+        if self.liability_free is not None:
+            self.assert_case_is_trained(self.liability_free)
 
 
     def assert_all_tested(self):
         for case in self.testcases:
             self.assert_case_is_tested(case)
+        if self.liability_free is not None:
+            self.assert_case_is_tested(self.liability_free)
 
 
     def test(self, sample_size):
         self.assert_all_trained()
-
         raw_data = self.sample(sample_size)
-        for case in self.testcases:
-            input_data = self.get_input(case, raw_data)
-            self.test_case(case, input_data)
 
         if self.liability_free is not None:
             input_data = self.get_input(self.liability_free, raw_data)
             input_data[-1] = tf.zeros_like(input_data[-1])
             self.test_case(self.liability_free, input_data)
+
+        for case in self.testcases:
+            input_data = self.get_input(case, raw_data)
+            self.test_case(case, input_data)
+            case["price"] = self.get_price(case)
 
 
     def get_price(self, case):
@@ -289,8 +287,8 @@ class Driver(object):
             else:
                 liability_free_risk = self.liability_free["test_risk"]
 
-            case_risk = case["test_risk"]
-            return numeraire[0] * (case_risk - liability_free_risk)
+            risk = case["test_risk"]
+            return numeraire[0] * (risk - liability_free_risk)
 
 
     def test_summary(self):
@@ -312,7 +310,7 @@ class Driver(object):
             for val in [case[key] for key in print_keys]:
                 body += f"{val:.4f}".rjust(block_size)
 
-            price = self.get_price(case)
+            price = case["price"]
             body += f"{price: .4f}".rjust(block_size)
 
             body += "\n"
@@ -320,7 +318,7 @@ class Driver(object):
         print(header + "\n" + body)
 
 
-    def plot_distributions(self):
+    def plot_distributions(self, file_name=None):
         self.assert_all_tested()
         raw_data = self.sample(int(2**18))
 
@@ -333,13 +331,39 @@ class Driver(object):
             w.append(wealth)
 
         plot_data = [v, c, w] if self.cost is not None else [v, w]
-        for lst in plot_data:
+        plot_name = ["value", "costs", "wealth"] if self.cost is not None \
+            else ["value", "wealth"]
+
+        for lst, name in zip(plot_data, plot_name):
             plt.figure()
             for data in lst:
-                sns.distplot(data.numpy(), hist=False,
-                             kde_kws={'shade': True, 'linewidth': 3})
-            plt.legend([case["name"] for case in self.testcases])
-            plt.show()
+                sns.kdeplot(data.numpy(), shade=True)
+
+            plt.legend([case["name"] for case in self.testcases], loc="best")
+            plt.xlabel(name)
+
+            if file_name is not None:
+                plt.savefig(fr"{file_name}-{name}.pdf")
+            else:
+                plt.show()
+
+
+def plot_markovian_payoff(driver, size, file_name=None):
+    raw_data = driver.sample(size)
+    payoff = driver.book.payoff(*raw_data)
+
+    terminal_spot = raw_data[1][:, 0, -1]
+    key = tf.argsort(terminal_spot)
+
+    for case in driver.testcases:
+        input_data = driver.get_input(case, raw_data)
+        value, _ = case["model"](input_data)
+
+        plt.figure()
+        plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(), s=0.5)
+        plt.plot(tf.gather(terminal_spot, key).numpy(),
+                 tf.gather(payoff, key).numpy(), color="black")
+        plt.show()
 
 
 def plot_barrier_payoff(
@@ -369,7 +393,6 @@ def plot_barrier_payoff(
 
 
 def plot_correlation_matrix(corr):
-    plt.figure()
     plt.matshow(corr)
     plt.colorbar()
     plt.show()

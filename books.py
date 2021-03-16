@@ -124,7 +124,17 @@ class DerivativeBook(object):
         return tf.concat(v, axis=1)
 
 
-    @abc.abstractmethod
+    def discretise_time(self, timesteps):
+        return tf.cast(tf.linspace(0., self.maturity, timesteps + 1),
+                       FLOAT_DTYPE)
+
+
+    def sample_numeraire(self, time, init_numeraire, risk_neutral):
+        numeraire = self.numeraire_simulator.simulate(
+            time, init_numeraire, 1, risk_neutral)
+
+        return tf.squeeze(numeraire)
+
     def sample_paths(self,
                      init_instruments: tf.Tensor,
                      init_numeraire: tf.Tensor,
@@ -143,13 +153,42 @@ class DerivativeBook(object):
             instruments: (batch_size, instrument_dim, timesteps + 1)
             numeraire: (timesteps + 1, )
         """
-        time = tf.cast(tf.linspace(0., self.maturity, timesteps + 1), FLOAT_DTYPE)
+        time = self.discretise_time(timesteps)
         instruments = self.instrument_simulator.simulate(
             time, init_instruments, batch_size, risk_neutral)
-        numeraire = self.numeraire_simulator.simulate(
-            time, init_numeraire, 1, risk_neutral)
+        numeraire = self.sample_numeraire(time, init_numeraire, risk_neutral)
 
-        return time, instruments, tf.squeeze(numeraire)
+        return time, instruments, numeraire
+
+
+    def _scale_lognormally(self, state, batch_size, scale):
+        rvs = tf.random.normal((batch_size, tf.shape(state)[-1]))
+
+        return state * tf.exp(-scale**2 / 2. + scale * rvs)
+
+
+    def gradient_payoff(self,
+                     init_instruments: tf.Tensor,
+                     init_numeraire: tf.Tensor,
+                     batch_size: int,
+                     timesteps: int,
+                     risk_neutral: bool,
+                     exploring_scale: float=1/5) -> tf.Tensor:
+        """Simulate sample paths and compute payoffs with gradients."""
+        time = self.discretise_time(timesteps)
+        numeraire = self.sample_numeraire(time, init_numeraire, risk_neutral)
+        init_scaled = self._scale_lognormally(
+            init_instruments, batch_size, exploring_scale)
+
+        with tf.GradientTape() as tape:
+            tape.watch(init_scaled)
+            instruments = self.instrument_simulator.simulate(
+                time, init_scaled, batch_size, risk_neutral, as_list=True)
+            payoff = self.payoff(time, tf.stack(instruments, -1), numeraire)
+
+        gradient = tf.stack(tape.gradient(payoff, instruments), -1)
+
+        return time, tf.stack(instruments, -1), numeraire, payoff, gradient
 
 
 # =============================================================================
