@@ -12,7 +12,7 @@ class test_putcall(unittest.TestCase):
         maturity, strike, rate, volatility, theta = 0.25, 90, 0.05, 0.2, 1
         putcall = derivatives.PutCall(maturity, strike, rate, volatility, theta)
 
-        time = tf.constant([0, 0.1, 0.25], FLOAT_DTYPE)
+        time = tf.constant([0, 0.1, maturity], FLOAT_DTYPE)
         instrument = tf.constant([[100, 110,  91],
                                   [100., 121, 85]], FLOAT_DTYPE)
         numeraire = tf.math.exp(rate * time)
@@ -43,7 +43,7 @@ class test_putcall(unittest.TestCase):
         maturity, strike, rate, volatility, theta = 1.3, 110, 0.02, 0.05, -1
         putcall = derivatives.PutCall(maturity, strike, rate, volatility, theta)
 
-        time = tf.constant([0, 0.41, 1.3], FLOAT_DTYPE)
+        time = tf.constant([0, 0.41, maturity], FLOAT_DTYPE)
         instrument = tf.constant([[100, 110,  120],
                                   [110., 121, 85]], FLOAT_DTYPE)
         numeraire = tf.math.exp(rate * time)
@@ -76,7 +76,7 @@ class test_binary(unittest.TestCase):
         maturity, strike, rate, volatility = 1, 100, 0.05, 0.2
         binary = derivatives.BinaryCall(maturity, strike, volatility)
 
-        time = tf.constant([0, 1/2, 1], FLOAT_DTYPE)
+        time = tf.constant([0, 1/2, maturity], FLOAT_DTYPE)
         instrument = tf.constant([[100, 101,  91],
                                   [100., 121, 122]], FLOAT_DTYPE)
         numeraire = tf.math.exp(rate * time)
@@ -108,7 +108,7 @@ class test_barrier(unittest.TestCase):
     def setUp(self):
         self.maturity, self.strike, self.rate, self.volatility \
             = 1, 100, 0.05, 0.2
-        self.time = tf.constant([0, 1/2, 1], FLOAT_DTYPE)
+        self.time = tf.constant([0, 1/2, self.maturity], FLOAT_DTYPE)
         self.numeraire = tf.math.exp(self.rate * self.time)
 
 
@@ -293,3 +293,33 @@ class test_barrier(unittest.TestCase):
             ], FLOAT_DTYPE) / self.numeraire
 
         self.run_value_delta(instrument, binary, price_expected)
+
+
+class test_GeometricAverage(unittest.TestCase):
+    maturity, rate, volatility = 1.3, 0.02, 0.5
+    option = derivatives.GeometricAverage(maturity, volatility)
+
+    time = tf.constant([0, 0.5, maturity], FLOAT_DTYPE)
+    instrument = tf.constant([[100, 80,  110],
+                              [110, 121, 85]], FLOAT_DTYPE)
+    numeraire = tf.math.exp(rate * time)
+
+    price_expected = tf.constant([
+        [399.23008644804304, 328.96117479712228, 333.02128296074932],
+        [451.89106411813981, 480.39368878698826, 486.32280895991397]
+        ]) / numeraire[-1]
+
+    delta_expected = tf.constant([
+        [5.1899911238245604, 3.289611747971223, 0.],
+        [5.3405307577598347, 3.1761566200792615, 0.]
+        ]) / numeraire[-1]
+
+    payoff_expected = price_expected[..., -1]
+
+    price_result = option.value(time, instrument, numeraire)
+    delta_result = option.delta(time, instrument, numeraire)
+    payoff_result = option.payoff(time, instrument, numeraire)
+
+    assert_near(price_result, price_expected)
+    assert_near(delta_result, delta_expected)
+    assert_near(payoff_result, payoff_expected)

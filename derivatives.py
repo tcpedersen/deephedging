@@ -308,18 +308,18 @@ class GeometricAverage(Derivative):
     def payoff(self, time, instrument, numeraire):
         dt = time[1:] - time[:-1]
 
-        return tf.reduce_prod(instrument[..., :-1] ** dt, -1) / numeraire[-1]
+        return tf.reduce_prod(tf.pow(instrument[..., :-1], dt), -1) / numeraire[-1]
 
 
     def value(self, time, instrument, numeraire):
         dt = time[1:] - time[:-1]
         rate = tf.math.log(numeraire[-1]) / self.maturity
-        measurable = tf.math.cumprod(instrument[..., :-1] ** dt, -1)
+        measurable = tf.math.cumprod(tf.pow(instrument[..., :-1], dt), -1)
         padded = tf.pad(measurable, [[0, 0], [1, 0]], constant_values=1)
 
         tau = self.maturity - time
-        expected = tf.exp(tau * tf.math.log(instrument) \
-            + (rate - self.volatility**2 / 2.) * tau**2 / 2. \
+        expected = tf.pow(instrument, tau) * tf.exp(
+            (rate - self.volatility**2 / 2.) * tau**2 / 2. \
                 + self.volatility**2 * tau**3 / 6.)
 
         return padded * expected / numeraire[-1]

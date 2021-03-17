@@ -2,13 +2,15 @@
 import unittest
 import tensorflow as tf
 
-import models
+import hedge_models
+import approximators
 from constants import FLOAT_DTYPE
+
 
 class test_OCERiskMeasure(unittest.TestCase):
     def test_ExpectedShortfall(self):
         alpha = 0.95
-        risk_measure = models.ExpectedShortfall(alpha)
+        risk_measure = hedge_models.ExpectedShortfall(alpha)
 
         # ES is known in closed form for uniform.
         loss = tf.math.sobol_sample(1, 2**19, dtype=FLOAT_DTYPE)
@@ -25,7 +27,7 @@ class test_OCERiskMeasure(unittest.TestCase):
 
     def test_EntropicRisk(self):
         aversion = 2.
-        risk_measure = models.EntropicRisk(aversion)
+        risk_measure = hedge_models.EntropicRisk(aversion)
 
         # Entropic risk is just log of MGF divided by aversion
         loss = tf.math.sobol_sample(1, 2**19, dtype=FLOAT_DTYPE)
@@ -41,7 +43,7 @@ class test_FeatureMap(unittest.TestCase):
     def test_GaussianFeatureMap(self):
         batch, height = 100, 3
         x = tf.random.normal((batch, height))
-        layer = models.GaussianFeatureMap()
+        layer = approximators.GaussianFeatureMap()
 
         result = layer(x)
 

@@ -15,7 +15,7 @@ num_layers, num_units = 2, 15
 
 # ==============================================================================
 # === setup
-init_instruments, init_numeraire, book = books.random_barrier_book(
+init_instruments, init_numeraire, book = books.random_geometric_asian_book(
     timesteps / 250, 25, 10, 10, 72)
 
 driver = utils.Driver(
@@ -79,45 +79,3 @@ driver.train(train_size, 100, int(2**10))
 driver.test(test_size)
 driver.test_summary()
 driver.plot_distributions()
-
-
-# # ==============================================================================
-# # === setup model
-# model = models.DeltaHedge(book, time, numeraire)
-# model.compile(models.ExpectedShortfall(alpha))
-
-# train = utils.benchmark_input(time, instruments, numeraire, book)
-
-
-# # ==============================================================================
-# # ====
-
-# # improves speed
-# @tf.function
-# def run(x):
-#     return model(x)
-
-# value, _ = model(train)
-
-# price = book.value(time, instruments, numeraire)[0, 0]
-# print(f"initial investment: {price * numeraire[0]:.4f}.")
-
-# payoff = utils.precise_mean(book.payoff(time, instruments, numeraire))
-# print(f"average discounted option payoff: {payoff:.4f}.")
-
-# hedge_wealth = price + utils.precise_mean(value)
-# print(f"average discounted portfolio value: {hedge_wealth:.4f}.")
-
-# # =============================================================================
-# # === visualize
-# utils.plot_distributions([model], [train], [price])
-
-# utils.plot_barrier_payoff(
-#         model,
-#         train,
-#         price,
-#         time,
-#         instruments,
-#         numeraire,
-#         book
-#     )
