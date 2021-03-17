@@ -16,7 +16,7 @@ num_layers, num_units = 2, 15
 # ==============================================================================
 # === sample train data
 init_instruments, init_numeraire, book = books.random_barrier_book(
-    timesteps / 250, 1, 1, 1, 72)
+    timesteps / 250, 1, 1, 1, 69)
 time, instruments, numeraire = book.sample_paths(
     init_instruments,
     init_numeraire,

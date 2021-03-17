@@ -172,13 +172,15 @@ class DerivativeBook(object):
                      init_numeraire: tf.Tensor,
                      batch_size: int,
                      timesteps: int,
+                     frequency: int,
                      risk_neutral: bool,
                      exploring_scale: float=1/5) -> tf.Tensor:
         """Simulate sample paths and compute payoffs with gradients."""
-        time = self.discretise_time(timesteps)
+        time = self.discretise_time(timesteps * (1 + frequency))
         numeraire = self.sample_numeraire(time, init_numeraire, risk_neutral)
         init_scaled = self._scale_lognormally(
             init_instruments, batch_size, exploring_scale)
+        skip = frequency + 1
 
         with tf.GradientTape() as tape:
             tape.watch(init_scaled)
@@ -186,9 +188,10 @@ class DerivativeBook(object):
                 time, init_scaled, batch_size, risk_neutral, as_list=True)
             payoff = self.payoff(time, tf.stack(instruments, -1), numeraire)
 
-        gradient = tf.stack(tape.gradient(payoff, instruments), -1)
+        gradient = tf.stack(tape.gradient(payoff, instruments[::skip]), -1)
 
-        return time, tf.stack(instruments, -1), numeraire, payoff, gradient
+        return time[::skip], tf.stack(instruments[::skip], -1), numeraire[::skip],\
+            payoff, gradient
 
 
 # =============================================================================
@@ -205,9 +208,9 @@ def random_black_scholes_parameters(
     rate = tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE)
 
     scale = tf.cast(tf.sqrt(float(num_brownian_motions)), FLOAT_DTYPE)
-    diffusion = tf.random.uniform(
-        (instrument_dim, num_brownian_motions),
-        - 0.4 / scale, 0.4 / scale, FLOAT_DTYPE)
+    size = (instrument_dim, num_brownian_motions)
+    diffusion = random_sign(size, 0.5) \
+        * tf.random.uniform(size, 0.15 / scale, 0.4 / scale, FLOAT_DTYPE)
 
     init_instruments = uniform((instrument_dim, ), 95, 105, FLOAT_DTYPE)
     init_numeraire = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)

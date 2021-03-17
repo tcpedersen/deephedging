@@ -105,10 +105,16 @@ class Driver(object):
             self.init_instruments,
             self.init_numeraire,
             size,
-            self.timesteps * self.frequency,
+            self.timesteps * (self.frequency + 1),
             self.risk_neutral)
 
-        return time, instruments, numeraire
+        skip = self.frequency + 1
+        value = self.book.value(time, instruments, numeraire)[...,::skip]
+        delta = self.book.delta(time, instruments, numeraire)[...,::skip]
+        payoff = self.book.payoff(time, instruments, numeraire)
+
+        return time[::skip], instruments[..., ::skip], numeraire[::skip], \
+            value, delta, payoff
 
 
     def validate_feature_type(self, feature_type):
@@ -135,6 +141,7 @@ class Driver(object):
 
         assert issubclass(type(model), hedge_models.Hedge)
         assert issubclass(type(risk_measure), hedge_models.OCERiskMeasure)
+        assert model.timesteps == self.timesteps
 
         if self.cost is not None:
             model.add_cost_layers(self.cost)
@@ -156,10 +163,12 @@ class Driver(object):
         assert issubclass(type(model), hedge_models.Hedge)
         assert issubclass(type(risk_measure), hedge_models.OCERiskMeasure)
 
-        self.liability_free = {"model": model,
+        self.liability_free = {"name": "liability free",
+                               "model": model,
                                "risk_measure": risk_measure,
                                "normaliser": normaliser,
                                "feature_type": feature_type,
+                               "price": 0.,
                                "trained": False,
                                "tested": False}
 
@@ -169,12 +178,12 @@ class Driver(object):
 
 
     def get_input(self, case, raw_data):
-        time, instruments, numeraire = raw_data
+        time, instruments, numeraire, value, delta, payoff = raw_data
 
         if case["feature_type"] == "log_martingale":
             features = tf.math.log(instruments / numeraire)
         elif case["feature_type"] == "delta":
-            features = self.book.delta(time, instruments, numeraire) * numeraire
+            features = delta * numeraire
         else:
             message = f"feature_type '{case['feature_type']}' is not valid."
             raise NotImplementedError(message)
@@ -185,7 +194,6 @@ class Driver(object):
              features = case["normaliser"].transform(features)
 
         martingales = instruments / numeraire
-        payoff = self.book.payoff(time, instruments, numeraire)
 
         return [features, martingales, payoff]
 
@@ -216,14 +224,16 @@ class Driver(object):
             input_data = self.get_input(case, raw_data)
             self.train_case(case, input_data,
                             batch_size=batch_size,
-                            epochs=epochs)
+                            epochs=epochs,
+                            verbose=1)
 
         if self.liability_free is not None:
             input_data = self.get_input(self.liability_free, raw_data)
             input_data[-1] = tf.zeros_like(input_data[-1])
             self.train_case(self.liability_free, input_data,
                             batch_size=batch_size,
-                            epochs=epochs)
+                            epochs=epochs,
+                            verbose=1)
 
 
     def test_case(self, case, input_data):
@@ -277,10 +287,10 @@ class Driver(object):
         self.assert_case_is_trained(case)
         self.assert_case_is_tested(case)
 
-        time, instruments, numeraire = self.sample(1)
+        _, _, numeraire, value, _, _ = self.sample(1)
 
         if case["price_type"] == "arbitrage":
-            return self.book.value(time, instruments, numeraire)[0, 0]
+            return value[0, 0]
         elif case["price_type"] == "indifference":
             if self.cost is None and self.risk_neutral:
                 liability_free_risk = 0.
@@ -305,7 +315,8 @@ class Driver(object):
         print_keys = ["test_value", "test_costs", "test_wealth",
                       "train_risk", "test_risk"]
 
-        for case in self.testcases:
+        extra = [self.liability_free] if self.liability_free is not None else []
+        for case in self.testcases + extra:
             body += case["name"].ljust(case_size)
             for val in [case[key] for key in print_keys]:
                 body += f"{val:.4f}".rjust(block_size)
@@ -350,7 +361,7 @@ class Driver(object):
 
 def plot_markovian_payoff(driver, size, file_name=None):
     raw_data = driver.sample(size)
-    payoff = driver.book.payoff(*raw_data)
+    payoff = raw_data[-1]
 
     terminal_spot = raw_data[1][:, 0, -1]
     key = tf.argsort(terminal_spot)

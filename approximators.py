@@ -6,9 +6,9 @@ from tensorflow.keras.layers import Dense, BatchNormalization
 from tensorflow.keras.activations import relu
 
 class Approximator(tf.keras.layers.Layer, abc.ABC):
-    def __init__(self, instrument_dim, internal_dim, **kwargs):
+    def __init__(self, output_dim, internal_dim, **kwargs):
         super().__init__(**kwargs)
-        self.instrument_dim = int(instrument_dim)
+        self.output_dim = int(output_dim)
         self.internal_dim = int(internal_dim)
 
 
@@ -19,31 +19,28 @@ class Approximator(tf.keras.layers.Layer, abc.ABC):
             inputs: ...
             training: bool
         Returns:
-            output: (batch_size, instrument_dim + internal_dim)
+            output: (batch_size, output_dim + internal_dim)
         """
 
 
     def call(self, inputs, training=False):
         """Implementation of call for tf.keras.layers.Layer."""
-        output = self._call(inputs, training)
-        hedge, internal = tf.split(
-            output, [self.instrument_dim, self.internal_dim], 1)
+        full_output = self._call(inputs, training)
+        output, internal = tf.split(
+            full_output, [self.output_dim, self.internal_dim], 1)
 
-        return hedge, internal
+        return output, internal
 
 
 class DenseApproximator(Approximator):
     def __init__(self,
-                 instrument_dim,
                  num_layers,
                  num_units,
-                 internal_dim=0,
+                 output_dim,
+                 internal_dim,
                  activation=relu,
                  **kwargs):
-        super().__init__(instrument_dim, internal_dim)
-
-        self.instrument_dim = int(instrument_dim)
-        self.internal_dim = int(internal_dim)
+        super().__init__(output_dim, internal_dim)
         self.activation = activation
 
         self.dense_layers = []
@@ -54,7 +51,7 @@ class DenseApproximator(Approximator):
                 Dense(units=num_units, use_bias=False))
             self.batch_layers.append(BatchNormalization())
 
-        self.output_layer = Dense(units=self.instrument_dim + self.internal_dim)
+        self.output_layer = Dense(units=output_dim + internal_dim)
 
 
     def _call(self, inputs, training=False):

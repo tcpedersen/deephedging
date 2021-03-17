@@ -275,7 +275,8 @@ class test_barrier(unittest.TestCase):
 
     def test_up_and_in_barrier_above_strike(self):
         instrument = tf.constant([[95, 102,  101],
-                                  [90., 121, 102]], FLOAT_DTYPE)
+                                  [90, 121, 102],
+                                  [110, 100, 110]], FLOAT_DTYPE)
 
         barrier = 105
         binary = derivatives.BarrierCall(
@@ -289,7 +290,8 @@ class test_barrier(unittest.TestCase):
 
         price_expected = tf.constant([
             [7.49382803156, 8.12283426454, 0],
-            [5.06817662477, 23.8937611227, 2]
+            [5.06817662477, 23.8937611227, 2],
+            [17.662952423095703, 6.888732433319092, 10]
             ], FLOAT_DTYPE) / self.numeraire
 
         self.run_value_delta(instrument, binary, price_expected)

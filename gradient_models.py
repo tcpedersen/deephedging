@@ -19,20 +19,17 @@ class SemiRecurrentApproximator(tf.keras.models.Model, abc.ABC):
 
     def compile(self, **kwargs):
         super().compile(**kwargs)
-
-        self.instrument_dim = self.approximators[0].instrument_dim
         self.internal_dim = self.approximators[0].internal_dim
 
 
-    def call(self, inputs, training=False):
-        """Implementation of call for tf.keras.models.Model.
-        The martingales and payoff are assumed to be expressed in terms of the
-        numeraire.
+    def inner_call(self, inputs, training=False):
+        """The martingales and payoff are assumed to be expressed in terms of
+        the numeraire.
 
         Args:
-            inputs: instruments (batch_size, instrument_dim, timesteps + 1)
+            inputs: instruments (batch_size, input_dim, timesteps + 1)
         Returns:
-            output: (batch_size, instrument_dim, timesteps)
+            output: (batch_size, timesteps)
         """
         output = []
         batch_size = tf.shape(inputs)[0]
@@ -43,7 +40,17 @@ class SemiRecurrentApproximator(tf.keras.models.Model, abc.ABC):
             approx, internal = h(observation)
             output.append(approx)
 
-        return tf.stack(output, -1)
+        return output
+
+
+    def call(self, inputs, training=False):
+        """Implementation of tf.keras.Model.call."""
+        with tf.GradientTape() as tape:
+            tape.watch(inputs)
+            y = self.inner_call(inputs, training)
+        dydx = tape.gradient(y, inputs)
+
+        return tf.concat(y, -1), dydx
 
 
 class MemorylessSemiRecurrent(SemiRecurrentApproximator):
@@ -67,3 +74,30 @@ class MemorylessSemiRecurrent(SemiRecurrentApproximator):
 
     def observation(self, step, features, internal):
         return features[..., step]
+
+
+class MemorySemiRecurrent(SemiRecurrentApproximator):
+    def __init__(self,
+                 timesteps,
+                 internal_dim,
+                 num_layers,
+                 num_units):
+        super().__init__()
+
+        self._approximators = []
+        for _ in range(timesteps):
+            self._approximators.append(approximators.DenseApproximator(
+                num_layers=num_layers,
+                num_units=num_units,
+                output_dim=1,
+                internal_dim=internal_dim,
+                activation=tf.keras.activations.softplus))
+
+
+    @property
+    def approximators(self) -> list:
+        return self._approximators
+
+
+    def observation(self, step, features, internal):
+        return tf.concat([features[..., step], internal], 1)
