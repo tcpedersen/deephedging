@@ -5,7 +5,7 @@ from unittest import TestCase
 from tensorflow.debugging import assert_near
 import tensorflow_probability as tfp
 
-from preprocessing import MeanVarianceNormaliser, ZeroComponentAnalysis
+import preprocessing
 from constants import FLOAT_DTYPE
 
 def get_degenerate_sample(batch, height, width, degenerate, seed):
@@ -44,7 +44,7 @@ class test_MeanVarianceNormaliser(TestCase):
         batch, height, width, degenerate = 6, 7, 8, 4
         x = get_degenerate_sample(batch, height, width, degenerate, 69)
 
-        normaliser = MeanVarianceNormaliser()
+        normaliser = preprocessing.MeanVarianceNormaliser()
         xn = normaliser.fit_transform(x)
 
         assert_near(tf.reduce_mean(xn, 0), tf.zeros_like(x[0, ...]))
@@ -63,7 +63,7 @@ class test_MeanVarianceNormaliser(TestCase):
         batch, height, width = 2**20, 3, 2
         x = get_low_variance_sample(batch, height, width, 69)
 
-        normaliser = MeanVarianceNormaliser()
+        normaliser = preprocessing.MeanVarianceNormaliser()
         xn = normaliser.fit_transform(x)
 
         tf.debugging.assert_type(xn, FLOAT_DTYPE)
@@ -88,7 +88,7 @@ class test_ZeroComponentAnalysis(TestCase):
         batch, height, width, degenerate = 2**20, 3, 2, 1
         x = get_degenerate_sample(batch, height, width, degenerate, 69)
 
-        normaliser = ZeroComponentAnalysis()
+        normaliser = preprocessing.ZeroComponentAnalysis()
         xn = normaliser.fit_transform(x)
 
         # test mean
@@ -105,3 +105,43 @@ class test_ZeroComponentAnalysis(TestCase):
 
         y = normaliser.inverse_transform(xn)
         assert_near(y, x, atol=1e-6)
+
+
+class test_DifferentialMeanVarianceNormaliser(TestCase):
+    def test_normal(self):
+        def f(x):
+            sqrt2 = tf.sqrt(2.)
+            return (tf.square(tf.reduce_sum(x, 1) / sqrt2) - 1.) / sqrt2
+
+        def df(x):
+            with tf.GradientTape() as tape:
+                tape.watch(x)
+                y = f(x)
+            return tape.gradient(y, x)
+
+        batch, dimension, timesteps = 2**20, 2, 3
+
+        size = (dimension, timesteps)
+        a, b = tf.random.normal(size), tf.abs(tf.random.normal(size))
+        z = tf.random.normal((batch, dimension, timesteps))
+        z = (z - tf.reduce_mean(z, 0)) / tf.math.reduce_std(z, 0)
+        x = b * z + a
+        alpha, beta = tf.random.normal((1, timesteps)), \
+            tf.abs(tf.random.normal((1, timesteps)))
+
+        with tf.GradientTape() as tape:
+            tape.watch(x)
+            z = (x - a) / b
+            h = beta * f(z) + alpha
+        dhdx = tape.gradient(h, x)
+
+        normaliser = preprocessing.DifferentialMeanVarianceNormaliser()
+        norm_x, norm_h, norm_dhdx = normaliser.fit_transform(x, h, dhdx)
+
+        tf.debugging.assert_near(norm_x, z)
+        tf.debugging.assert_near(norm_h, f(z))
+        tf.debugging.assert_near(norm_dhdx, df(z))
+
+        renorm = normaliser.inverse_transform(norm_x, norm_h, norm_dhdx)
+        for result, expected in zip(renorm, [x, h, dhdx]):
+            tf.debugging.assert_near(result, expected)

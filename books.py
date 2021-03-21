@@ -200,7 +200,8 @@ def random_black_scholes_parameters(
         maturity: int,
         instrument_dim: int,
         num_brownian_motions: int,
-        seed: int):
+        seed: int,
+        sign_prob: float=0.5):
     tf.random.set_seed(seed)
 
     maturity = float(maturity)
@@ -209,7 +210,7 @@ def random_black_scholes_parameters(
 
     scale = tf.cast(tf.sqrt(float(num_brownian_motions)), FLOAT_DTYPE)
     size = (instrument_dim, num_brownian_motions)
-    diffusion = random_sign(size, 0.5) \
+    diffusion = random_sign(size, sign_prob) \
         * tf.random.uniform(size, 0.15 / scale, 0.4 / scale, FLOAT_DTYPE)
 
     init_instruments = uniform((instrument_dim, ), 95, 105, FLOAT_DTYPE)
@@ -239,12 +240,13 @@ def random_put_call_book(
         book_size: int,
         instrument_dim: int,
         num_brownian_motions: int,
-        seed: int):
+        seed: int,
+        **kwargs):
     assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
 
     init_instruments, init_numeraire, drift, rate, diffusion = \
         random_black_scholes_parameters(
-            maturity, instrument_dim, num_brownian_motions, seed)
+            maturity, instrument_dim, num_brownian_motions, seed, **kwargs)
 
     instrument_simulator = GBM(rate, drift, diffusion)
     numeraire_simulator = ConstantBankAccount(rate)

@@ -3,7 +3,7 @@ import tensorflow as tf
 import abc
 
 from tensorflow.keras.layers import Dense, BatchNormalization
-from tensorflow.keras.activations import relu
+from tensorflow.keras.activations import relu, softplus
 
 class Approximator(tf.keras.layers.Layer, abc.ABC):
     def __init__(self, output_dim, internal_dim, **kwargs):
@@ -38,7 +38,7 @@ class DenseApproximator(Approximator):
                  num_units,
                  output_dim,
                  internal_dim,
-                 activation=relu,
+                 activation=softplus,
                  **kwargs):
         super().__init__(output_dim, internal_dim)
         self.activation = activation
@@ -63,10 +63,10 @@ class DenseApproximator(Approximator):
             output: see Strategy._call
         """
         for dense, batch in zip(self.dense_layers, self.batch_layers):
-            inputs = dense(inputs)
+            inputs = dense(inputs, training=training)
             inputs = batch(inputs, training=training)
             inputs = self.activation(inputs)
-        output = self.output_layer(inputs)
+        output = self.output_layer(inputs, training=training)
 
         return output
 

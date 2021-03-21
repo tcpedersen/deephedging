@@ -69,7 +69,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         assert issubclass(type(risk_measure), OCERiskMeasure)
         self.risk_measure = risk_measure
 
-        self.instrument_dim = self.strategy_layers[0].instrument_dim
+        self.instrument_dim = self.strategy_layers[0].output_dim
         self.internal_dim = self.strategy_layers[0].internal_dim
 
 
@@ -222,13 +222,21 @@ class LinearFeatureHedge(Hedge):
 class SimpleHedge(Hedge):
     def __init__(
             self, timesteps, instrument_dim, num_layers, num_units, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__()
 
         self._strategy_layers = [approximators.DenseApproximator(
-                instrument_dim, 1, instrument_dim)]
+                num_layers=1,
+                num_units=instrument_dim,
+                output_dim=instrument_dim,
+                internal_dim=0,
+                **kwargs)]
         for _ in range(timesteps - 1):
             self._strategy_layers.append(approximators.DenseApproximator(
-                instrument_dim, num_layers, num_units))
+                num_layers=num_layers,
+                num_units=num_units,
+                output_dim=instrument_dim,
+                internal_dim=0,
+                **kwargs))
 
 
     @property
@@ -256,10 +264,16 @@ class MemoryHedge(Hedge):
         super().__init__(**kwargs)
 
         self._strategy_layers = [approximators.DenseApproximator(
-                instrument_dim, 1, num_units, internal_dim)]
+                num_layers=1,
+                num_units=num_units,
+                output_dim=instrument_dim,
+                internal_dim=internal_dim)]
         for _ in range(timesteps - 1):
             self._strategy_layers.append(approximators.DenseApproximator(
-                instrument_dim, num_layers, num_units, internal_dim))
+                num_layers=num_layers,
+                num_units=num_units,
+                output_dim=instrument_dim,
+                internal_dim=internal_dim))
 
 
     @property

@@ -193,9 +193,7 @@ class Driver(object):
                  case["normaliser"].fit(features)
              features = case["normaliser"].transform(features)
 
-        martingales = instruments / numeraire
-
-        return [features, martingales, payoff]
+        return [features, instruments / numeraire, payoff]
 
 
     def get_risk(self, case, input_data):
@@ -207,8 +205,9 @@ class Driver(object):
 
     def train_case(self, case, input_data, **kwargs):
         optimizer = self.optimizer(self.learning_rate)
-        case["model"].compile(case["risk_measure"],
-                              optimizer=optimizer)
+        case["model"].compile(
+            risk_measure=case["risk_measure"],
+            optimizer=optimizer)
 
         case["history"] = case["model"].fit(
             input_data, callbacks=self.callbacks, **kwargs)
@@ -224,16 +223,14 @@ class Driver(object):
             input_data = self.get_input(case, raw_data)
             self.train_case(case, input_data,
                             batch_size=batch_size,
-                            epochs=epochs,
-                            verbose=1)
+                            epochs=epochs)
 
         if self.liability_free is not None:
             input_data = self.get_input(self.liability_free, raw_data)
             input_data[-1] = tf.zeros_like(input_data[-1])
             self.train_case(self.liability_free, input_data,
                             batch_size=batch_size,
-                            epochs=epochs,
-                            verbose=1)
+                            epochs=epochs)
 
 
     def test_case(self, case, input_data):
@@ -287,9 +284,8 @@ class Driver(object):
         self.assert_case_is_trained(case)
         self.assert_case_is_tested(case)
 
-        _, _, numeraire, value, _, _ = self.sample(1)
-
         if case["price_type"] == "arbitrage":
+            _, _, _, value, _, _ = self.sample(1)
             return value[0, 0]
         elif case["price_type"] == "indifference":
             if self.cost is None and self.risk_neutral:
@@ -297,11 +293,10 @@ class Driver(object):
             else:
                 liability_free_risk = self.liability_free["test_risk"]
 
-            risk = case["test_risk"]
-            return numeraire[0] * (risk - liability_free_risk)
+            return case["test_risk"] - liability_free_risk
 
 
-    def test_summary(self):
+    def test_summary(self, file_name=None):
         self.assert_all_tested()
 
         block_size = 17
@@ -326,10 +321,16 @@ class Driver(object):
 
             body += "\n"
 
-        print(header + "\n" + body)
+        summary = header + "\n" + body
+
+        if file_name is not None:
+            with open(file_name, "w") as file:
+                file.write(summary)
+
+        print(summary)
 
 
-    def plot_distributions(self, file_name=None):
+    def plot_distributions(self, file_name=None, legend_loc="right"):
         self.assert_all_tested()
         raw_data = self.sample(int(2**18))
 
@@ -350,7 +351,8 @@ class Driver(object):
             for data in lst:
                 sns.kdeplot(data.numpy(), shade=True)
 
-            plt.legend([case["name"] for case in self.testcases], loc="best")
+            plt.legend([case["name"] for case in self.testcases],
+                       loc=legend_loc)
             plt.xlabel(name)
 
             if file_name is not None:
@@ -374,7 +376,33 @@ def plot_markovian_payoff(driver, size, file_name=None):
         plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(), s=0.5)
         plt.plot(tf.gather(terminal_spot, key).numpy(),
                  tf.gather(payoff, key).numpy(), color="black")
-        plt.show()
+        if file_name is not None:
+            plt.savefig(fr"{file_name}-{case['name']}.png") # must be png, as eps/pdf too heavy
+        else:
+            plt.show()
+
+
+def plot_univariate_hedge_ratios(driver, size, file_name=None):
+    raw_data = driver.sample(size)
+
+    for case in driver.testcases[0]:
+        input_data = driver.get_input(case, raw_data)
+        ratios = case["model"].hedge_ratios(input_data)[0]
+        vmin, vmax = float(tf.reduce_min(ratios - raw_data[4][..., :-1])), \
+            float(tf.reduce_max(ratios - raw_data[4][..., :-1]))
+
+        for idx in range(15 - 1):
+            x1 = raw_data[1][:, 0, idx]
+            x2 = ratios[:, 0, idx - 1]
+            y = ratios[:, 0, idx] - raw_data[4][:, 0, idx]
+
+            plt.figure()
+            plt.scatter(x1.numpy(), x2.numpy(), c=y.numpy(), s=0.5)
+            plt.clim(vmin, vmax)
+            plt.colorbar()
+            plt.ioff()
+            plt.savefig(fr"{file_name}-{case['name']}-{idx}.png")
+            plt.close()
 
 
 def plot_barrier_payoff(
