@@ -297,31 +297,38 @@ class test_barrier(unittest.TestCase):
         self.run_value_delta(instrument, binary, price_expected)
 
 
-class test_GeometricAverage(unittest.TestCase):
-    maturity, rate, volatility = 1.3, 0.02, 0.5
-    option = derivatives.GeometricAverage(maturity, volatility)
+class test_DiscreteGeometricAverage(unittest.TestCase):
+    def test_value_delta(self):
+        maturity, rate, volatility = 1.3, 0.02, 0.3
+        time = tf.constant([0, 0.1, 0.2, 0.6, maturity], FLOAT_DTYPE)
+        mtime = tf.constant([0.1, 0.6, maturity], FLOAT_DTYPE)
 
-    time = tf.constant([0, 0.5, maturity], FLOAT_DTYPE)
-    instrument = tf.constant([[100, 80,  110],
-                              [110, 121, 85]], FLOAT_DTYPE)
-    numeraire = tf.math.exp(rate * time)
+        option = derivatives.DiscreteGeometricAverage(
+            maturity, rate, volatility, mtime)
 
-    price_expected = tf.constant([
-        [399.23008644804304, 328.96117479712228, 333.02128296074932],
-        [451.89106411813981, 480.39368878698826, 486.32280895991397]
-        ]) / numeraire[-1]
+        instrument = tf.constant([[100, 80, 90, 120, 110],
+                                  [110, 121, 131, 120, 85]], FLOAT_DTYPE)
+        numeraire = 1.1 * tf.math.exp(rate * time)
 
-    delta_expected = tf.constant([
-        [5.1899911238245604, 3.289611747971223, 0.],
-        [5.3405307577598347, 3.1761566200792615, 0.]
-        ]) / numeraire[-1]
+        value_expected = tf.constant([
+            [408.1608111743, 304.0583503949, 349.0025636452, 486.0822045715, 455.9051533831],
+            [461.9998080152, 520.6680555699, 570.7326249172, 506.6164183263, 396.7001896122]
+            ]) / numeraire[-1]
 
-    payoff_expected = price_expected[..., -1]
+        delta_expected = tf.constant([
+            [5.3060905453, 4.9409481939, 4.6533675153, 4.8608220457, 2.9012146124],
+            [5.4599977311, 5.5939543160, 5.2280851137, 5.0661641833, 3.2669427380]
+            ]) / numeraire[-1]
 
-    price_result = option.value(time, instrument, numeraire)
-    delta_result = option.delta(time, instrument, numeraire)
-    payoff_result = option.payoff(time, instrument, numeraire)
+        payoff_expected = value_expected[..., -1]
 
-    assert_near(price_result, price_expected)
-    assert_near(delta_result, delta_expected)
-    assert_near(payoff_result, payoff_expected)
+        mvalue_result = option.mvalue(time, instrument, numeraire)
+        value_result = option.value(time, instrument, numeraire)
+        delta_result = option.delta(time, instrument, numeraire)
+        payoff_result = option.payoff(time, instrument, numeraire)
+
+        mask = option.get_time_mask(time, with_time_zero=True)
+        assert_near(mvalue_result, tf.boolean_mask(value_expected, mask, 1))
+        assert_near(value_result, value_expected)
+        assert_near(delta_result, delta_expected)
+        assert_near(payoff_result, payoff_expected)

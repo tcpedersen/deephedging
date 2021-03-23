@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
+import numpy as np
 import abc
 
 from utils import norm_cdf, norm_pdf
@@ -299,36 +300,113 @@ class BarrierCall(Barrier):
             - self.down_delta(time, instrument, numeraire)
 
 
-class GeometricAverage(Derivative):
-    def __init__(self, maturity, volatility):
-        self.maturity = maturity
-        self.volatility = volatility
+class DiscreteGeometricAverage(Derivative):
+    def __init__(self, maturity, rate, volatility, mtime):
+        self.maturity = float(maturity)
+        self.rate = float(rate)
+        self.volatility = float(volatility)
+        self.mtime = tf.convert_to_tensor(mtime, FLOAT_DTYPE)
+        self.dt = tf.pad(self.mtime[1:] - self.mtime[:-1], [[1, 0]],
+                         constant_values=self.mtime[0])
+
+        padded_mtime = tf.pad(self.mtime, [[1, 0]])
+        mu = (self.rate - self.volatility**2 / 2.) * tf.reduce_sum(
+            tf.linalg.band_part(
+                (mtime[..., tf.newaxis] - padded_mtime[:-1]) \
+                    * self.dt[..., tf.newaxis], -1, 0), 0)
+        vsq = self.volatility**2 * tf.cumsum(
+            tf.square(self.maturity - padded_mtime[:-1]) * self.dt,
+            reverse=True)
+        self.expxi = tf.math.exp(mu + vsq / 2.)
+        self.expxi = tf.pad(self.expxi, [[0, 1]], constant_values=1)
+
+
+        assert tf.equal(self.maturity, self.mtime[-1]), \
+            "maturity must be last monitoring date."
+        assert not tf.equal(self.mtime[0], 0.), \
+            "time 0 is not an allowed monitoring date."
+
+
+    def get_time_mask(self, time, with_time_zero=False):
+        mask = tf.convert_to_tensor(np.isin(time, self.mtime), tf.bool)
+        num_true = tf.reduce_sum(tf.cast(mask, tf.int32))
+
+        if not tf.equal(num_true, tf.size(self.mtime)):
+            raise ValueError("time does not contain every element of mtime.")
+
+        if with_time_zero:
+            condition = tf.cast(tf.one_hot(0, tf.size(mask)), tf.bool)
+            mask = tf.where(condition, True, mask)
+
+        return mask
 
 
     def payoff(self, time, instrument, numeraire):
-        dt = time[1:] - time[:-1]
+        mask = self.get_time_mask(time)
+        v = tf.pow(tf.boolean_mask(instrument, mask, 1), self.dt)
 
-        return tf.reduce_prod(tf.pow(instrument[..., :-1], dt), -1) / numeraire[-1]
+        return tf.reduce_prod(v, -1) / numeraire[-1]
 
+
+    def mvalue(self, time, instrument, numeraire):
+        mask = self.get_time_mask(time, with_time_zero=True)
+        masked = tf.boolean_mask(instrument, mask, 1)
+
+        padded_dt = tf.pad(self.dt, [[1, 0]])
+        measurable = tf.math.cumprod(tf.pow(masked, padded_dt), -1)
+        ttm = tf.pad(self.maturity - self.mtime, [[1, 0]],
+                     constant_values=self.maturity)
+
+        return measurable * tf.pow(masked, ttm) / numeraire[-1] * self.expxi
+
+
+    def _get_split_size(self, mask):
+        indices = tf.squeeze(tf.where(mask))
+        padded = tf.concat([indices, [tf.size(mask, indices.dtype)]], 0)
+        size = padded[1:] - padded[:-1]
+
+        return size
 
     def value(self, time, instrument, numeraire):
-        dt = time[1:] - time[:-1]
-        rate = tf.math.log(numeraire[-1]) / self.maturity
-        measurable = tf.math.cumprod(tf.pow(instrument[..., :-1], dt), -1)
-        padded = tf.pad(measurable, [[0, 0], [1, 0]], constant_values=1)
+        mask = self.get_time_mask(time, with_time_zero=True)
+        size = self._get_split_size(mask)
 
-        tau = self.maturity - time
-        expected = tf.pow(instrument, tau) * tf.exp(
-            (rate - self.volatility**2 / 2.) * tau**2 / 2. \
-                + self.volatility**2 * tau**3 / 6.)
+        time_split = tf.split(time, size)
+        instrument_split = tf.split(instrument, size, 1)
 
-        return padded * expected / numeraire[-1]
+        mvalue = self.mvalue(time, instrument, numeraire)
+        masked = tf.boolean_mask(instrument, mask, 1)
+
+        value = []
+
+        for k, (t, spot) in enumerate(zip(time_split, instrument_split)):
+            tk = self.mtime[k - 1] if k > 0 else 0. # lazy padding with zero
+            ratio = tf.pow(spot / masked[..., k, tf.newaxis],
+                           self.maturity - tk)
+
+            p = self.rate - self.volatility**2 / 2.
+            v = p + self.volatility**2 / 2. * (self.maturity - tk)
+            push = tf.exp(-v * (self.maturity - tk) * (t - tk))
+
+            value.append(ratio * mvalue[..., k, tf.newaxis] * push)
+
+        return tf.concat(value, -1)
 
 
     def delta(self, time, instrument, numeraire):
-        tau = self.maturity - time
+        mask = self.get_time_mask(time, with_time_zero=True)
+        size = self._get_split_size(mask)
+        padded = tf.pad(self.mtime, [[2, 0]])
 
-        return self.value(time, instrument, numeraire) * tau / instrument
+        time_at_k = tf.concat(
+            [tf.ones(s) * padded[k] for k, s in enumerate(size)], 0)
+        time_at_t = tf.concat(
+            [tf.ones(s) * padded[k + 1] for k, s in enumerate(size)], 0)
+
+        scale = self.maturity - tf.where(mask, time_at_k, time_at_t)
+
+        return self.value(time, instrument, numeraire) * scale / instrument
+
 
 # ==============================================================================
 # === Black Scholes

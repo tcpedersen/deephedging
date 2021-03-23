@@ -56,9 +56,11 @@ class PeakSchedule:
 
 # ==============================================================================
 # === other
-def precise_mean(x, **kwargs):
-    return tf.cast(tf.reduce_mean(tf.cast(x, tf.float64)), x.dtype)
+def precise_func(func, x, **kwargs):
+    return tf.cast(func(tf.cast(x, tf.float64), **kwargs), x.dtype)
 
+def precise_mean(x, **kwargs):
+    return precise_func(tf.reduce_mean, x, **kwargs)
 
 # ==============================================================================
 # === experiments

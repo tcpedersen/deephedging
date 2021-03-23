@@ -122,7 +122,12 @@ class test_BlackScholesPutCallBook(TestCase):
         batch_size, timesteps = 10, 5
 
         _, instruments, numeraire, _, result = book.gradient_payoff(
-            init_instruments, init_numeraire, batch_size, timesteps, True)
+            init_instruments=init_instruments,
+            init_numeraire=init_numeraire,
+            batch_size=batch_size,
+            timesteps=timesteps,
+            frequency=2,
+            risk_neutral=True)
 
         itm = tf.cast(instruments[..., -1] > strike, FLOAT_DTYPE)
         expected = (instruments[..., -1] / instruments[:, 0, :]) / numeraire[-1] * itm
