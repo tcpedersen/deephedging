@@ -3,8 +3,8 @@ import abc
 import tensorflow as tf
 import numpy as np
 
+import utils
 from constants import FLOAT_DTYPE
-from utils import near_positive_definite
 
 class Simulator(abc.ABC):
     @property
@@ -23,17 +23,34 @@ class Simulator(abc.ABC):
         return len(self.correlation)
 
 
-    def rvs(self, batch_size, timesteps):
+    def rvs(self, batch_size, timesteps, use_sobol=False, skip=0):
         """Returns samples of normal random variables with correlation matrix.
         Args:
             batch_size: int
             timesteps: int
+            use_sobol: bool
+            skip: int
         Returns:
             rvs: (batch_size, timesteps, dimension)
         """
-        size = (batch_size, timesteps)
-        loc = tf.zeros((self.dimension, ), FLOAT_DTYPE)
-        rvs = np.random.multivariate_normal(loc, self.correlation, size)
+        if not use_sobol and skip > 0:
+            raise ValueError("skip must be 0 when use_sobol is false.")
+
+        if use_sobol:
+            chol = tf.linalg.cholesky(self.correlation)
+            sobol = tf.math.sobol_sample(
+                dim=self.dimension * timesteps,
+                num_results=batch_size,
+                skip=skip,
+                dtype=FLOAT_DTYPE)
+            sobol = tf.stack(tf.split(sobol, self.dimension, 1), -1)
+            rvs = utils.norm_qdf(sobol)
+            rvs = tf.matmul(chol, rvs, transpose_b=True)
+            rvs = tf.transpose(rvs, [0, 2, 1])
+        else:
+            size = (batch_size, timesteps)
+            loc = tf.zeros((self.dimension, ), FLOAT_DTYPE)
+            rvs = np.random.multivariate_normal(loc, self.correlation, size)
 
         return tf.convert_to_tensor(rvs, FLOAT_DTYPE)
 
@@ -51,7 +68,7 @@ class Simulator(abc.ABC):
 
 
     def simulate(self, time, init_state, batch_size, risk_neutral,
-                 as_list=False):
+                 as_list=False, use_sobol=False, skip=0):
         """Simulates paths.
         Args:
             time: (time_steps + 1, )
@@ -62,7 +79,8 @@ class Simulator(abc.ABC):
             paths: (batch_size, state_dim, timesteps + 1)
         """
         increment = time[1:] - time[:-1]
-        rvs = self.rvs(batch_size, len(time) - 1)
+        rvs = self.rvs(batch_size, len(time) - 1,
+                       use_sobol=use_sobol, skip=skip)
 
         if tf.equal(len(tf.shape(init_state)), 1):
             paths = [tf.tile(init_state[tf.newaxis, :], (batch_size, 1))]
@@ -95,7 +113,7 @@ class GBM(Simulator):
         self.volatility = tf.linalg.norm(self.diffusion, axis=1)
         self.correlation = (self.diffusion @ tf.transpose(self.diffusion)) \
             / (self.volatility[:, tf.newaxis] @ self.volatility[tf.newaxis, :])
-        self.correlation = near_positive_definite(self.correlation)
+        self.correlation = utils.near_positive_definite(self.correlation)
 
 
     def advance(self, state, rvs, dt, risk_neutral):

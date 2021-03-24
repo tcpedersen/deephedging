@@ -95,9 +95,10 @@ class test_BlackScholesPutCallBook(TestCase):
         multi_dim = random_put_call_book(0.5, 4, 4, 1, 69)
 
         for init_instruments, init_numeraire, book in [one_dim, multi_dim]:
-            num_paths, num_steps = 2**20, 2
+            num_paths, num_steps = 2**22, 2
             time, instruments, numeraire = book.sample_paths(
-                init_instruments, init_numeraire, num_paths, num_steps, True)
+                init_instruments, init_numeraire, num_paths, num_steps, True,
+                use_sobol=True, skip=0)
 
             expected_dims = (num_paths, book.instrument_dim, num_steps + 1)
             self.assertTupleEqual(tuple(instruments.shape), expected_dims)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
 import tensorflow_probability as tfp
-import abc
+import warnings
 
 from tensorflow.random import uniform
 
@@ -140,7 +140,9 @@ class DerivativeBook(object):
                      init_numeraire: tf.Tensor,
                      batch_size: int,
                      timesteps: int,
-                     risk_neutral: bool) -> tf.Tensor:
+                     risk_neutral: bool,
+                     use_sobol: bool=False,
+                     skip: int=0) -> tf.Tensor:
         """Simulate sample paths.
         Args:
             init_instruments: (state_dim, )
@@ -153,9 +155,17 @@ class DerivativeBook(object):
             instruments: (batch_size, instrument_dim, timesteps + 1)
             numeraire: (timesteps + 1, )
         """
+        if not timesteps & (timesteps - 1) == 0:
+            warnings.warn("timesteps is not a power of 2.")
+
         time = self.discretise_time(timesteps)
         instruments = self.instrument_simulator.simulate(
-            time, init_instruments, batch_size, risk_neutral)
+            time=time,
+            init_state=init_instruments,
+            batch_size=batch_size,
+            risk_neutral=risk_neutral,
+            use_sobol=use_sobol,
+            skip=skip)
         numeraire = self.sample_numeraire(time, init_numeraire, risk_neutral)
 
         return time, instruments, numeraire
@@ -333,8 +343,9 @@ def random_barrier_book(
     return init_instruments, init_numeraire, book
 
 
-def random_geometric_asian_book(
+def random_discrete_geometric_average_book(
         maturity: float,
+        monitoring_timesteps: int,
         book_size: int,
         instrument_dim: int,
         num_brownian_motions: int,
@@ -353,9 +364,12 @@ def random_geometric_asian_book(
     exposure = random_sign(book_size, 3 / 4)
     book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
 
+    mtime = book.discretise_time(monitoring_timesteps)[1:]
+
     for idx, link in enumerate(linker):
         vol = instrument_simulator.volatility[link]
-        derivative = derivatives.GeometricAverage(maturity, vol)
+        derivative = derivatives.DiscreteGeometricAverage(
+            maturity, rate, vol, mtime)
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book

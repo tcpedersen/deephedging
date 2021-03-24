@@ -323,9 +323,10 @@ class DiscreteGeometricAverage(Derivative):
 
         assert tf.equal(self.maturity, self.mtime[-1]), \
             "maturity must be last monitoring date."
-        assert not tf.equal(self.mtime[0], 0.), \
+        assert not tf.equal(self.mtime[0], 0), \
             "time 0 is not an allowed monitoring date."
-
+        assert tf.equal(self.mtime[-1], self.maturity),\
+            "final mtime must be at maturity."
 
     def get_time_mask(self, time, with_time_zero=False):
         mask = tf.convert_to_tensor(np.isin(time, self.mtime), tf.bool)

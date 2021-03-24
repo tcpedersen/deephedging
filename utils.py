@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from scipy.special import erfinv
 from tensorflow_probability.python.internal import special_math
 
 from constants import FLOAT_DTYPE_EPS, FLOAT_DTYPE
@@ -22,7 +21,7 @@ def norm_cdf(x):
     return special_math.ndtr(x)
 
 def norm_qdf(x):
-    return erfinv(2. * x - 1.) * SQRT_TWO
+    return special_math.ndtri(x)
 
 def near_positive_definite(A):
     dtype = tf.float64
