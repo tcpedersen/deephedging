@@ -260,8 +260,8 @@ class MemoryHedge(Hedge):
                  internal_dim,
                  num_layers,
                  num_units,
-                 **kwargs):
-        super().__init__(**kwargs)
+                **kwargs):
+        super().__init__()
 
         self._strategy_layers = [approximators.DenseApproximator(
                 num_layers=1,

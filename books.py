@@ -155,9 +155,6 @@ class DerivativeBook(object):
             instruments: (batch_size, instrument_dim, timesteps + 1)
             numeraire: (timesteps + 1, )
         """
-        if not timesteps & (timesteps - 1) == 0:
-            warnings.warn("timesteps is not a power of 2.")
-
         time = self.discretise_time(timesteps)
         instruments = self.instrument_simulator.simulate(
             time=time,
@@ -243,6 +240,10 @@ def random_sign(size, p):
     unscaled = tfp.distributions.Binomial(1, probs=p).sample(size)
 
     return tf.cast(2 * unscaled - 1, FLOAT_DTYPE)
+
+
+def pct_interval(x, p):
+    return (1 - p) * x, (1 + p) * x
 
 
 def random_put_call_book(
@@ -391,7 +392,6 @@ def random_dga_putcall_book(
     instrument_simulator = GBM(rate, drift, diffusion)
     numeraire_simulator = ConstantBankAccount(rate)
 
-    strike = uniform((book_size, ), 95, 105, FLOAT_DTYPE)
     put_call = random_sign(book_size, 1 / 2)
     exposure = random_sign(book_size, 3 / 4)
 
@@ -399,9 +399,11 @@ def random_dga_putcall_book(
 
     book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
     for idx, link in enumerate(linker):
+        expected = init_instruments[link]**maturity
+        strike = uniform((1, ), *pct_interval(expected, 0.1), FLOAT_DTYPE)
         vol = instrument_simulator.volatility[link]
         derivative = derivatives.DiscreteGeometricPutCall(
-            maturity, strike[idx], rate, vol, put_call[idx])
+            maturity, strike, rate, vol, put_call[idx])
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book

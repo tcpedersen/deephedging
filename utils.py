@@ -385,10 +385,11 @@ class Driver(object):
 
             x = raw_data["payoff"].numpy()
             y = (value - costs).numpy()
-            alpha, beta = np.polyfit(x, y, 1)
+            # beta, alpha = np.polyfit(x, y, 1)
+            alpha = y.mean() - x.mean()
 
             plt.scatter(x, y, s=0.5)
-            plt.plot(x, alpha + beta * x, "--", color="black")
+            plt.plot(x, alpha + x, "--", color="black")
 
             plt.show()
 
@@ -463,7 +464,8 @@ def plot_barrier_payoff(
         plt.show()
 
 
-def plot_correlation_matrix(corr):
+def plot_correlation_matrix(driver):
+    corr = driver.book.instrument_simulator.correlation
     plt.matshow(corr)
     plt.colorbar()
     plt.show()

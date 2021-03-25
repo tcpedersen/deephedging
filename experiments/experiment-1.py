@@ -13,7 +13,7 @@ folder_name = r"figures\bin"
 # ==============================================================================
 # === hyperparameters
 train_size, test_size, timesteps = int(2**18), int(2**20), int(2**4)
-hedges_per_day = 1
+hedge_multiplier = 1
 alpha = 0.95
 num_layers, num_units = 2, 15
 activation = tf.keras.activations.elu
@@ -27,7 +27,7 @@ init_instruments, init_numeraire, book = books.random_put_call_book(
 
 
 driver = utils.Driver(
-    timesteps=timesteps * hedges_per_day,
+    timesteps=timesteps * hedge_multiplier,
     frequency=0, # no need for frequency for non-path dependent derivatives.
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
@@ -39,7 +39,7 @@ driver = utils.Driver(
 
 driver.add_testcase("shallow network",
                     hedge_models.SimpleHedge(
-                        timesteps * hedges_per_day,
+                        timesteps * hedge_multiplier,
                         book.instrument_dim,
                         num_layers,
                         num_units,
@@ -51,7 +51,7 @@ driver.add_testcase("shallow network",
 
 driver.add_testcase("deep network",
                     hedge_models.SimpleHedge(
-                        timesteps * hedges_per_day,
+                        timesteps * hedge_multiplier,
                         book.instrument_dim,
                         num_layers * 2,
                         num_units,
@@ -63,7 +63,7 @@ driver.add_testcase("deep network",
 
 driver.add_testcase("identity feature map",
                     hedge_models.LinearFeatureHedge(
-                        timesteps * hedges_per_day,
+                        timesteps * hedge_multiplier,
                         book.instrument_dim,
                         [approximators.IdentityFeatureMap] * (1 + int(driver.cost is not None))
                     ),
@@ -74,7 +74,7 @@ driver.add_testcase("identity feature map",
 
 driver.add_testcase("continuous-time",
                     hedge_models.DeltaHedge(
-                        timesteps * hedges_per_day,
+                        timesteps * hedge_multiplier,
                         book.instrument_dim),
                     risk_measure=hedge_models.ExpectedShortfall(alpha),
                     normaliser=None,
@@ -84,7 +84,7 @@ driver.add_testcase("continuous-time",
 if driver.cost is not None or not driver.risk_neutral:
     driver.add_liability_free(
         hedge_models.SimpleHedge(
-            timesteps * hedges_per_day,
+            timesteps * hedge_multiplier,
             book.instrument_dim,
             num_layers=2,
             num_units=10,
