@@ -70,7 +70,7 @@ class PutCall(Derivative):
         raw_price = black_price(ttm, instrument, self.strike,
                                 self.rate, self.volatility, self.theta)
 
-        return raw_price / numeraire
+        return raw_price / numeraire[-1]
 
 
     def delta(self, time, instrument, numeraire):
@@ -78,7 +78,7 @@ class PutCall(Derivative):
         raw_delta = black_delta(ttm, instrument, self.strike,
                                 self.rate, self.volatility, self.theta)
 
-        return raw_delta / numeraire
+        return raw_delta / numeraire[-1]
 
 
 class BinaryCall(Derivative):
@@ -409,9 +409,105 @@ class DiscreteGeometricAverage(Derivative):
         return self.value(time, instrument, numeraire) * scale / instrument
 
 
+class DiscreteGeometricPutCall(Derivative):
+    def __init__(self, maturity: float, strike: float, rate: float,
+                 volatility: float, theta: float):
+        self.maturity = maturity
+        self.strike = tf.convert_to_tensor(strike, FLOAT_DTYPE)
+        self.rate = float(rate)
+        self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
+        self.theta = tf.convert_to_tensor(theta, FLOAT_DTYPE)
+
+
+    def _increments(self, time, pad):
+        return tf.pad(time[1:] - time[:-1], [[pad, 0]])
+
+
+    def _mean(self, time):
+        dt = self._increments(time, 0)
+        scale = self.rate - self.volatility**2 / 2.
+        mat = (time[1:, tf.newaxis] - time[:-1]) * dt[..., tf.newaxis]
+        unpadded = scale * tf.reduce_sum(tf.linalg.band_part(mat, -1, 0), 0)
+
+        return tf.pad(unpadded, [[0, 1]])
+
+
+    def _variance(self, time):
+        dt = self._increments(time, 0)
+        sqdiff = tf.square(self.maturity - time[:-1])
+        unpadded = self.volatility**2 * tf.cumsum(sqdiff * dt, reverse=True)
+
+        return tf.pad(unpadded, [[0, 1]])
+
+
+    def _derivatives(self, time):
+        mean, variance = self._mean(time), self._variance(time)
+        derivatives = []
+        for k in tf.range(tf.size(time) - 1): # -1 as otherwise divide by zero
+            ttm = self.maturity - time[k]
+            option = PutCall(
+                maturity=self.maturity,
+                strike=self.strike,
+                rate=(mean[k] + variance[k] / 2.) / ttm,
+                volatility=tf.sqrt(variance[k] / ttm),
+                theta=self.theta
+            )
+
+            derivatives.append(option)
+
+        return derivatives
+
+
+    def _dga(self, time, instrument):
+        dt = self._increments(time, 1)
+
+        return tf.math.cumprod(tf.pow(instrument, dt), -1)
+
+    def _apply(self, time, instrument, numeraire, method):
+        dga = self._dga(time, instrument)
+        spot = dga * tf.pow(instrument, self.maturity - time)
+        output = []
+
+        option = PutCall(
+            self.maturity, self.strike, self.rate, self.volatility, self.theta)
+
+        for k, option in enumerate(self._derivatives(time) + [option]):
+            indices = [0, k, tf.size(time) - 1]
+            marginal = getattr(option, method)(
+                time=tf.gather(time, indices),
+                instrument=tf.gather(spot, indices, axis=-1),
+                numeraire=tf.gather(numeraire, indices, axis=-1)
+                )
+            output.append(marginal[..., 1])
+
+        return tf.stack(output, -1)
+
+
+    def payoff(self, time, instrument, numeraire):
+        option = PutCall(
+            self.maturity, self.strike, self.rate, self.volatility, self.theta)
+
+        return option.payoff(time, self._dga(time, instrument), numeraire)
+
+
+    def value(self, time, instrument, numeraire):
+        return self._apply(time, instrument, numeraire, "value")
+
+
+    def delta(self, time, instrument, numeraire):
+        unscaled = self._apply(time, instrument, numeraire, "delta")
+
+        ttm = self.maturity - time
+        padded_ttm = self.maturity - tf.pad(time[:-1], [[1, 0]])
+        dga = self._dga(time, instrument)
+        scale = dga * tf.pow(instrument, ttm - 1) * padded_ttm
+
+        return unscaled * scale
+
+
 # ==============================================================================
 # === Black Scholes
-def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
+def black_price(time_to_maturity, spot, strike, drift, volatility, theta):
     """Returns price in Black's model.
     Args:
         time_to_maturity: (timesteps + 1, )
@@ -423,33 +519,31 @@ def black_price(time_to_maturity, spot, strike, rate, volatility, theta):
     Returns:
         price: (batch_size, timesteps + 1)
     """
-    deflator = tf.math.exp(-rate * time_to_maturity)
-    forward = spot / deflator
+    forward = spot * tf.math.exp(drift * time_to_maturity)
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
     m_over_v = m / v
     v_over_2 = v / 2.
 
-    value = deflator * theta \
-            * (forward * norm_cdf(theta * (m_over_v + v_over_2)) \
-               - strike * norm_cdf(theta * (m_over_v - v_over_2)))
+    value = theta * (forward * norm_cdf(theta * (m_over_v + v_over_2)) \
+                     - strike * norm_cdf(theta * (m_over_v - v_over_2)))
 
     return value
 
 
-def black_delta(time_to_maturity, spot, strike, rate, volatility, theta):
+def black_delta(time_to_maturity, spot, strike, drift, volatility, theta):
     """Returns delta in Black's model.
     Args:
         see black_price
     Returns:
         delta: (batch_size, timesteps + 1)
     """
-    deflator = tf.math.exp(-rate * time_to_maturity)
-    forward = spot / deflator
+    inflator = tf.math.exp(drift * time_to_maturity)
+    forward = spot * inflator
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
 
-    raw_delta = theta * norm_cdf(theta * (m / v + v / 2.))
+    raw_delta = theta * inflator * norm_cdf(theta * (m / v + v / 2.))
     payoff_delta = theta * tf.cast(theta * (spot - strike) > 0, FLOAT_DTYPE)
     delta = tf.where(tf.equal(v, 0.), payoff_delta, raw_delta)
 

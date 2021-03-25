@@ -267,13 +267,15 @@ class MemoryHedge(Hedge):
                 num_layers=1,
                 num_units=num_units,
                 output_dim=instrument_dim,
-                internal_dim=internal_dim)]
+                internal_dim=internal_dim,
+                **kwargs)]
         for _ in range(timesteps - 1):
             self._strategy_layers.append(approximators.DenseApproximator(
                 num_layers=num_layers,
                 num_units=num_units,
                 output_dim=instrument_dim,
-                internal_dim=internal_dim))
+                internal_dim=internal_dim,
+                **kwargs))
 
 
     @property

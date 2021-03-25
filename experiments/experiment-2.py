@@ -7,25 +7,24 @@ import approximators
 
 # ==============================================================================
 # === hyperparameters
-train_size, test_size, timesteps = int(2**18), int(2**18), 14
-frequency = 10
+train_size, test_size, timesteps = int(2**18), int(2**20), 2**4
 alpha = 0.95
 
 num_layers, num_units = 2, 15
 
 # ==============================================================================
 # === setup
-init_instruments, init_numeraire, book = books.random_geometric_asian_book(
-    timesteps / 250, 25, 10, 10, 72)
+init_instruments, init_numeraire, book = books.random_dga_putcall_book(
+    timesteps / 250, 1, 1, 1, 72)
 
 driver = utils.Driver(
     timesteps=timesteps,
-    frequency=frequency,
+    frequency=0, # no need for frequency
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
-    cost=1. / 100,
-    risk_neutral=False,
+    cost=None,
+    risk_neutral=True,
     learning_rate=1e-2
     )
 

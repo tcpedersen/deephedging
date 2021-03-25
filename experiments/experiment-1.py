@@ -8,14 +8,15 @@ import preprocessing
 import books
 
 # ==============================================================================
-folder_name = r"figures\markovian-multivariate\no-cost-frequent"
+folder_name = r"figures\bin"
 
 # ==============================================================================
 # === hyperparameters
-train_size, test_size, timesteps = int(2**18), int(2**18), 14
+train_size, test_size, timesteps = int(2**18), int(2**20), int(2**4)
 hedges_per_day = 1
 alpha = 0.95
 num_layers, num_units = 2, 15
+activation = tf.keras.activations.elu
 
 # ==============================================================================
 # ===
@@ -41,7 +42,8 @@ driver.add_testcase("shallow network",
                         timesteps * hedges_per_day,
                         book.instrument_dim,
                         num_layers,
-                        num_units),
+                        num_units,
+                        activation=activation),
                     risk_measure=hedge_models.ExpectedShortfall(alpha),
                     normaliser=preprocessing.MeanVarianceNormaliser(),
                     feature_type="log_martingale",
@@ -52,7 +54,8 @@ driver.add_testcase("deep network",
                         timesteps * hedges_per_day,
                         book.instrument_dim,
                         num_layers * 2,
-                        num_units),
+                        num_units,
+                        activation=activation),
                     risk_measure=hedge_models.ExpectedShortfall(alpha),
                     normaliser=preprocessing.MeanVarianceNormaliser(),
                     feature_type="log_martingale",

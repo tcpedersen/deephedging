@@ -373,3 +373,35 @@ def random_discrete_geometric_average_book(
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book
+
+
+def random_dga_putcall_book(
+        maturity: float,
+        book_size: int,
+        instrument_dim: int,
+        num_brownian_motions: int,
+        seed: int,
+        **kwargs):
+    assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
+
+    init_instruments, init_numeraire, drift, rate, diffusion = \
+        random_black_scholes_parameters(
+            maturity, instrument_dim, num_brownian_motions, seed, **kwargs)
+
+    instrument_simulator = GBM(rate, drift, diffusion)
+    numeraire_simulator = ConstantBankAccount(rate)
+
+    strike = uniform((book_size, ), 95, 105, FLOAT_DTYPE)
+    put_call = random_sign(book_size, 1 / 2)
+    exposure = random_sign(book_size, 3 / 4)
+
+    linker = random_linker(book_size, instrument_dim)
+
+    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
+    for idx, link in enumerate(linker):
+        vol = instrument_simulator.volatility[link]
+        derivative = derivatives.DiscreteGeometricPutCall(
+            maturity, strike[idx], rate, vol, put_call[idx])
+        book.add_derivative(derivative, link, exposure[idx])
+
+    return init_instruments, init_numeraire, book

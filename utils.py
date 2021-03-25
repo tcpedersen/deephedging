@@ -101,21 +101,30 @@ class Driver(object):
         self.liability_free = None
 
 
-    def sample(self, size):
+    def sample(self, size, **kwargs):
         time, instruments, numeraire = self.book.sample_paths(
             self.init_instruments,
             self.init_numeraire,
             size,
             self.timesteps * (self.frequency + 1),
-            self.risk_neutral)
+            self.risk_neutral,
+            **kwargs)
 
         skip = self.frequency + 1
         value = self.book.value(time, instruments, numeraire)[...,::skip]
         delta = self.book.delta(time, instruments, numeraire)[...,::skip]
         payoff = self.book.payoff(time, instruments, numeraire)
 
-        return time[::skip], instruments[..., ::skip], numeraire[::skip], \
-            value, delta, payoff
+        sample = {
+            "time": time[::skip],
+            "instruments": instruments[..., ::skip],
+            "numeraire": numeraire[::skip],
+            "value": value,
+            "delta": delta,
+            "payoff": payoff
+            }
+
+        return sample
 
 
     def validate_feature_type(self, feature_type):
@@ -179,12 +188,13 @@ class Driver(object):
 
 
     def get_input(self, case, raw_data):
-        time, instruments, numeraire, value, delta, payoff = raw_data
+        instruments = raw_data["instruments"]
+        numeraire = raw_data["numeraire"]
 
         if case["feature_type"] == "log_martingale":
             features = tf.math.log(instruments / numeraire)
         elif case["feature_type"] == "delta":
-            features = delta * numeraire
+            features = raw_data["delta"] * numeraire
         else:
             message = f"feature_type '{case['feature_type']}' is not valid."
             raise NotImplementedError(message)
@@ -194,7 +204,7 @@ class Driver(object):
                  case["normaliser"].fit(features)
              features = case["normaliser"].transform(features)
 
-        return [features, instruments / numeraire, payoff]
+        return [features, instruments / numeraire, raw_data["payoff"]]
 
 
     def get_risk(self, case, input_data):
@@ -218,7 +228,7 @@ class Driver(object):
 
 
     def train(self, sample_size, epochs, batch_size):
-        raw_data = self.sample(sample_size)
+        raw_data = self.sample(sample_size, use_sobol=True) # TODO remove?
 
         for case in self.testcases:
             input_data = self.get_input(case, raw_data)
@@ -280,14 +290,15 @@ class Driver(object):
             self.test_case(case, input_data)
             case["price"] = self.get_price(case)
 
+        self.test_mean_payoff = tf.reduce_mean(raw_data["payoff"], 0)
+
 
     def get_price(self, case):
         self.assert_case_is_trained(case)
         self.assert_case_is_tested(case)
 
         if case["price_type"] == "arbitrage":
-            _, _, _, value, _, _ = self.sample(1)
-            return value[0, 0]
+            return self.sample(1)["value"][0, 0]
         elif case["price_type"] == "indifference":
             if self.cost is None and self.risk_neutral:
                 liability_free_risk = 0.
@@ -323,6 +334,7 @@ class Driver(object):
             body += "\n"
 
         summary = header + "\n" + body
+        summary += "\n\n" + f"payoff: {self.test_mean_payoff: .4f}"
 
         if file_name is not None:
             with open(file_name, "w") as file:
@@ -360,6 +372,25 @@ class Driver(object):
                 plt.savefig(fr"{file_name}-{name}.pdf")
             else:
                 plt.show()
+
+
+    def plot_scatter_payoff(self, file_name=None):
+        self.assert_all_tested()
+        raw_data = self.sample(int(2**18))
+
+        for case in self.testcases:
+            plt.figure()
+            input_data = self.get_input(case, raw_data)
+            value, costs = case["model"](input_data)
+
+            x = raw_data["payoff"].numpy()
+            y = (value - costs).numpy()
+            alpha, beta = np.polyfit(x, y, 1)
+
+            plt.scatter(x, y, s=0.5)
+            plt.plot(x, alpha + beta * x, "--", color="black")
+
+            plt.show()
 
 
 def plot_markovian_payoff(driver, size, file_name=None):

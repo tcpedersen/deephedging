@@ -311,13 +311,17 @@ class test_DiscreteGeometricAverage(unittest.TestCase):
         numeraire = 1.1 * tf.math.exp(rate * time)
 
         value_expected = tf.constant([
-            [408.1608111743, 304.0583503949, 349.0025636452, 486.0822045715, 455.9051533831],
-            [461.9998080152, 520.6680555699, 570.7326249172, 506.6164183263, 396.7001896122]
+            [408.1608111743, 304.0583503949, 349.0025636452, 486.0822045715,
+             455.9051533831],
+            [461.9998080152, 520.6680555699, 570.7326249172, 506.6164183263,
+             396.7001896122]
             ]) / numeraire[-1]
 
         delta_expected = tf.constant([
-            [5.3060905453, 4.9409481939, 4.6533675153, 4.8608220457, 2.9012146124],
-            [5.4599977311, 5.5939543160, 5.2280851137, 5.0661641833, 3.2669427380]
+            [5.3060905453, 4.9409481939, 4.6533675153, 4.8608220457,
+             2.9012146124],
+            [5.4599977311, 5.5939543160, 5.2280851137, 5.0661641833,
+             3.2669427380]
             ]) / numeraire[-1]
 
         payoff_expected = value_expected[..., -1]
@@ -332,3 +336,29 @@ class test_DiscreteGeometricAverage(unittest.TestCase):
         assert_near(value_result, value_expected)
         assert_near(delta_result, delta_expected)
         assert_near(payoff_result, payoff_expected)
+
+
+class test_DiscreteGeometricPutCall(unittest.TestCase):
+    def test_value_delta(self):
+        maturity, rate, volatility = 1.3, 0.02, 0.3
+        time = tf.constant([0, 0.1, 0.2, 0.6, maturity], FLOAT_DTYPE)
+        option = derivatives.DiscreteGeometricPutCall(
+            maturity=maturity,
+            strike=0,
+            rate=rate,
+            volatility=volatility,
+            theta=1
+        )
+
+        instrument = tf.constant([[100, 80, 90, 120, 110],
+                                  [110, 121, 131, 120, 85]], FLOAT_DTYPE)
+        numeraire = 1.1 * tf.math.exp(rate * time)
+
+        benchmark = derivatives.DiscreteGeometricAverage(
+            maturity, rate, volatility, time[1:])
+
+        for method in ["value", "delta", "payoff"]:
+            result = getattr(option, method)(time, instrument, numeraire)
+            expected = getattr(benchmark, method)(time, instrument, numeraire)
+
+            assert_near(result, expected, message=f"method: {method}")

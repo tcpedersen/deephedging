@@ -3,7 +3,7 @@ import tensorflow as tf
 import abc
 
 from tensorflow.keras.layers import Dense, BatchNormalization
-from tensorflow.keras.activations import relu, softplus
+from tensorflow.keras.activations import relu, softplus, tanh
 
 class Approximator(tf.keras.layers.Layer, abc.ABC):
     def __init__(self, output_dim, internal_dim, **kwargs):
