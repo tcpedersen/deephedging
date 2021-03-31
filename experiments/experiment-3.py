@@ -8,29 +8,34 @@ import preprocessing
 import approximators
 
 # ==============================================================================
-folder_name = r"figures\bin"
+folder_name = r"figures\continuous-univariate\cost"
 activation = tf.keras.activations.softplus
 
 # ==============================================================================
 # === hyperparameters
-train_size, test_size, timesteps = int(2**12), int(2**12), 12
+train_size, test_size, timesteps = int(2**18), int(2**18), 14
 hedge_multiplier = 1
+frequency = 6
 alpha = 0.95
 num_layers, num_units = 2, 15
 
 # ==============================================================================
 # === setup
-init_instruments, init_numeraire, book = books.random_dga_putcall_book(
-    timesteps / 12, 1, 1, 1, 69)
+#init_instruments, init_numeraire, book = books.random_barrier_book(
+#    timesteps / 250, 1, 1, 1, 91)
+
+init_instruments, init_numeraire, book = books.simple_barrier_book(
+    timesteps / 250, 100, 100, 95, 0.02, 0.05, 0.4, -1, -1)
+
 
 driver = utils.Driver(
     timesteps=timesteps * hedge_multiplier,
-    frequency=0, # no need for frequency
+    frequency=frequency,
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
-    cost=None,
-    risk_neutral=True,
+    cost=1/100,
+    risk_neutral=False,
     learning_rate=1e-1
     )
 
@@ -91,6 +96,37 @@ driver.add_testcase(
     price_type="indifference")
 
 
+for lookback in [2, 3, 4]:
+    driver.add_testcase(
+        f"shallow lookback network {lookback}",
+        hedge_models.NeuralHedge(
+            timesteps=timesteps * hedge_multiplier,
+            instrument_dim=book.instrument_dim,
+            internal_dim=book.instrument_dim,
+            num_layers=num_layers,
+            num_units=num_units,
+            activation=activation),
+        risk_measure=hedge_models.ExpectedShortfall(alpha),
+        normaliser=preprocessing.MeanVarianceNormaliser(),
+        feature_type="log_martingale",
+        price_type="indifference",
+        lookback=lookback)
+
+    driver.add_testcase(
+        f"deep lookback network {lookback}",
+        hedge_models.NeuralHedge(
+            timesteps=timesteps * hedge_multiplier,
+            instrument_dim=book.instrument_dim,
+            internal_dim=book.instrument_dim,
+            num_layers=num_layers * 2,
+            num_units=num_units,
+            activation=activation),
+        risk_measure=hedge_models.ExpectedShortfall(alpha),
+        normaliser=preprocessing.MeanVarianceNormaliser(),
+        feature_type="log_martingale",
+        price_type="indifference",
+        lookback=lookback)
+
 driver.add_testcase(
     name="identity feature map",
     model=hedge_models.LinearFeatureHedge(
@@ -127,4 +163,4 @@ if driver.cost is not None or not driver.risk_neutral:
 driver.train(train_size, 1000, int(2**10))
 driver.test(test_size)
 driver.test_summary(fr"{folder_name}\test-summary.txt")
-driver.plot_distributions(fr"{folder_name}\hist", "upper right")
+#driver.plot_distributions(fr"{folder_name}\hist", "upper right")

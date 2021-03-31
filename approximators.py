@@ -3,11 +3,10 @@ import tensorflow as tf
 import abc
 
 from tensorflow.keras.layers import Dense, BatchNormalization
-from tensorflow.keras.activations import relu, softplus, tanh
 
 class Approximator(tf.keras.layers.Layer, abc.ABC):
-    def __init__(self, output_dim, internal_dim, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, output_dim, internal_dim):
+        super().__init__()
         self.output_dim = int(output_dim)
         self.internal_dim = int(internal_dim)
 
@@ -38,8 +37,7 @@ class DenseApproximator(Approximator):
                  num_units,
                  output_dim,
                  internal_dim,
-                 activation=softplus,
-                 **kwargs):
+                 activation):
         super().__init__(output_dim, internal_dim)
         self.activation = activation
 
@@ -73,7 +71,7 @@ class DenseApproximator(Approximator):
 
 class FeatureApproximator(Approximator):
     def __init__(self, instrument_dim, **kwargs):
-        super().__init__(instrument_dim, 0, trainable=False)
+        super().__init__(instrument_dim, 0)
 
 
     def _call(self, inputs, training=False):
@@ -93,27 +91,9 @@ class IdentityFeatureMap(tf.keras.layers.Layer):
         return inputs
 
 
-class GaussianFeatureMap(tf.keras.layers.Layer):
-    def build(self, input_shape):
-        shape = (input_shape[-1], )
-        self.center = self.add_weight(
-            shape=shape, initializer="glorot_uniform", trainable=True)
-        self.scale = self.add_weight(
-            shape=shape,
-            initializer=tf.keras.initializers.constant(1 / 2),
-            trainable=True)
-        super().build(input_shape)
-
-
-    def call(self, inputs, training=False):
-        centered = inputs[..., tf.newaxis] - self.center
-
-        return tf.exp(- self.scale * tf.reduce_sum(tf.square(centered), 1))
-
-
 class LinearFeatureApproximator(Approximator):
-    def __init__(self, instrument_dim, mappings, **kwargs):
-        super().__init__(instrument_dim, 0, **kwargs)
+    def __init__(self, instrument_dim, mappings):
+        super().__init__(instrument_dim, 0)
 
         self.mappings = [mapping() for mapping in mappings]
         self.bias = self.add_weight(shape=(instrument_dim, ),
@@ -123,15 +103,11 @@ class LinearFeatureApproximator(Approximator):
 
     def build(self, input_shape):
         self.kernels = []
-        for shape in input_shape:
-            kernel = self.add_weight(shape=(shape[-1], ),
+        for _ in range(len(self.mappings)):
+            kernel = self.add_weight(shape=(self.output_dim, ),
                                      initializer="glorot_uniform",
                                      trainable=True)
             self.kernels.append(kernel)
-
-        assert len(self.kernels) == len(self.mappings), \
-            "length of kernels and mappings unequal: " \
-                + f"{len(self.kernels)} != {len(self.mappings)}"
 
         super().build(input_shape)
 
@@ -141,8 +117,10 @@ class LinearFeatureApproximator(Approximator):
         Args / Returns:
             see FeatureStrategy._call
         """
+        inputs = tf.split(inputs, len(self.mappings), 1)
         output = 0.
-        for feature, kernel, mapping in zip(inputs, self.kernels, self.mappings):
+        iterator = zip(inputs, self.kernels, self.mappings)
+        for feature, kernel, mapping in iterator:
             output += tf.multiply(kernel, mapping(feature))
 
         return output + self.bias

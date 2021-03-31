@@ -37,17 +37,3 @@ class test_OCERiskMeasure(unittest.TestCase):
         expected = tf.math.log((tf.exp(aversion) - 1) / aversion) / aversion
 
         tf.debugging.assert_near(result, expected)
-
-
-class test_FeatureMap(unittest.TestCase):
-    def test_GaussianFeatureMap(self):
-        batch, height = 100, 3
-        x = tf.random.normal((batch, height))
-        layer = approximators.GaussianFeatureMap()
-
-        result = layer(x)
-
-        zipped = zip(layer.center.numpy(), layer.scale.numpy())
-        for idx, (c, gamma) in enumerate(zipped):
-            expected = tf.exp(-gamma * tf.linalg.norm(x - c, ord=2, axis=-1)**2)
-            tf.debugging.assert_near(result[..., idx], expected)

@@ -12,11 +12,11 @@ folder_name = r"figures\bin"
 
 # ==============================================================================
 # === hyperparameters
-train_size, test_size, timesteps = int(2**18), int(2**20), int(2**4)
+train_size, test_size, timesteps = int(2**18), int(2**20), 14
 hedge_multiplier = 1
 alpha = 0.95
 num_layers, num_units = 2, 15
-activation = tf.keras.activations.elu
+activation = tf.keras.activations.softplus
 
 # ==============================================================================
 # ===
@@ -32,63 +32,68 @@ driver = utils.Driver(
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
-    cost=None,
-    risk_neutral=True,
+    cost=1/100,
+    risk_neutral=False,
     learning_rate=1e-1
     )
 
-driver.add_testcase("shallow network",
-                    hedge_models.SimpleHedge(
-                        timesteps * hedge_multiplier,
-                        book.instrument_dim,
-                        num_layers,
-                        num_units,
-                        activation=activation),
-                    risk_measure=hedge_models.ExpectedShortfall(alpha),
-                    normaliser=preprocessing.MeanVarianceNormaliser(),
-                    feature_type="log_martingale",
-                    price_type="indifference")
+driver.add_testcase(
+    "shallow network",
+    hedge_models.NeuralHedge(
+        timesteps=timesteps * hedge_multiplier,
+        instrument_dim=book.instrument_dim,
+        internal_dim=0,
+        num_layers=num_layers,
+        num_units=num_units,
+        activation=activation),
+    risk_measure=hedge_models.ExpectedShortfall(alpha),
+    normaliser=preprocessing.MeanVarianceNormaliser(),
+    feature_type="log_martingale",
+    price_type="indifference")
 
-driver.add_testcase("deep network",
-                    hedge_models.SimpleHedge(
-                        timesteps * hedge_multiplier,
-                        book.instrument_dim,
-                        num_layers * 2,
-                        num_units,
-                        activation=activation),
-                    risk_measure=hedge_models.ExpectedShortfall(alpha),
-                    normaliser=preprocessing.MeanVarianceNormaliser(),
-                    feature_type="log_martingale",
-                    price_type="indifference")
+driver.add_testcase(
+    "deep network",
+    hedge_models.NeuralHedge(
+        timesteps=timesteps * hedge_multiplier,
+        instrument_dim=book.instrument_dim,
+        internal_dim=0,
+        num_layers=num_layers * 2,
+        num_units=num_units,
+        activation=activation),
+    risk_measure=hedge_models.ExpectedShortfall(alpha),
+    normaliser=preprocessing.MeanVarianceNormaliser(),
+    feature_type="log_martingale",
+    price_type="indifference")
 
-driver.add_testcase("identity feature map",
-                    hedge_models.LinearFeatureHedge(
-                        timesteps * hedge_multiplier,
-                        book.instrument_dim,
-                        [approximators.IdentityFeatureMap] * (1 + int(driver.cost is not None))
-                    ),
-                    risk_measure=hedge_models.ExpectedShortfall(alpha),
-                    normaliser=None,
-                    feature_type="delta",
-                    price_type="indifference")
+driver.add_testcase(
+    "identity feature map",
+    hedge_models.LinearFeatureHedge(
+        timesteps=timesteps * hedge_multiplier,
+        instrument_dim=book.instrument_dim,
+        mappings=[approximators.IdentityFeatureMap] \
+            * (1 + (driver.cost is not None))),
+    risk_measure=hedge_models.ExpectedShortfall(alpha),
+    normaliser=None,
+    feature_type="delta",
+    price_type="indifference")
 
-driver.add_testcase("continuous-time",
-                    hedge_models.DeltaHedge(
-                        timesteps * hedge_multiplier,
-                        book.instrument_dim),
-                    risk_measure=hedge_models.ExpectedShortfall(alpha),
-                    normaliser=None,
-                    feature_type="delta",
-                    price_type="arbitrage")
+driver.add_testcase(
+    "continuous-time",
+    hedge_models.DeltaHedge(
+        timesteps=timesteps * hedge_multiplier,
+        instrument_dim=book.instrument_dim),
+    risk_measure=hedge_models.ExpectedShortfall(alpha),
+    normaliser=None,
+    feature_type="delta",
+    price_type="arbitrage")
 
 if driver.cost is not None or not driver.risk_neutral:
     driver.add_liability_free(
-        hedge_models.SimpleHedge(
-            timesteps * hedge_multiplier,
-            book.instrument_dim,
-            num_layers=2,
-            num_units=10,
-            activation=tf.keras.activations.relu),
+        hedge_models.LinearFeatureHedge(
+            timesteps=timesteps * hedge_multiplier,
+            instrument_dim=book.instrument_dim,
+            mappings=[approximators.IdentityFeatureMap] \
+                * (1 + (driver.cost is not None))),
         risk_measure=hedge_models.ExpectedShortfall(alpha),
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_type="log_martingale")
@@ -100,3 +105,7 @@ driver.plot_distributions(fr"{folder_name}\hist", "upper right")
 
 if book.book_size == 1:
     utils.plot_markovian_payoff(driver, test_size, fr"{folder_name}\payoff")
+
+
+
+

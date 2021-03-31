@@ -344,6 +344,22 @@ def random_barrier_book(
     return init_instruments, init_numeraire, book
 
 
+def simple_barrier_book(maturity, spot, strike, barrier, rate, drift, vol,
+                        outin, updown):
+    init_instruments = tf.constant((spot, ), FLOAT_DTYPE)
+    init_numeraire = tf.constant((1., ), FLOAT_DTYPE)
+
+    instrument_simulator = GBM(rate, drift, [[vol]])
+    numeraire_simulator = ConstantBankAccount(rate)
+
+    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
+    derivative = derivatives.BarrierCall(
+        maturity, strike, barrier, rate, vol, outin, updown)
+    book.add_derivative(derivative, 0, 1)
+
+    return init_instruments, init_numeraire, book
+
+
 def random_discrete_geometric_average_book(
         maturity: float,
         monitoring_timesteps: int,

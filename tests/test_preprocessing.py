@@ -43,44 +43,43 @@ class test_MeanVarianceNormaliser(unittest.TestCase):
     def test_degenerate_col(self):
         batch, height, width, degenerate = 6, 7, 8, 4
         x = get_degenerate_sample(batch, height, width, degenerate, 69)
+        inputs = [x[..., 0] for x in tf.split(x, width, axis=-1)]
 
         normaliser = preprocessing.MeanVarianceNormaliser()
-        xn = normaliser.fit_transform(x)
+        outputs = normaliser.fit_transform(inputs)
 
-        assert_near(tf.reduce_mean(xn, 0), tf.zeros_like(x[0, ...]))
+        for step, op in enumerate(outputs):
+            assert_near(tf.reduce_mean(op, 0), 0.)
 
-        # test non-degenerate
-        mask = tf.equal(x[0, ...], x[0, ..., degenerate, tf.newaxis])
-        expected_var = tf.ones_like(x[0, ...])
-        expected_var = tf.where(mask, 0., expected_var)
-        assert_near(tf.math.reduce_variance(xn, 0), expected_var)
+            expected_var = 0. if step == degenerate else 1.
+            assert_near(tf.math.reduce_variance(op, 0), expected_var)
 
-        y = normaliser.inverse_transform(xn)
-        assert_near(y, x)
+        assert_near(normaliser.inverse_transform(outputs), inputs)
 
 
     def test_low_variance(self):
         batch, height, width = 2**20, 3, 2
         x = get_low_variance_sample(batch, height, width, 69)
+        inputs = [x[..., 0] for x in tf.split(x, width, axis=-1)]
 
         normaliser = preprocessing.MeanVarianceNormaliser()
-        xn = normaliser.fit_transform(x)
+        outputs = normaliser.fit_transform(inputs)
 
-        tf.debugging.assert_type(xn, FLOAT_DTYPE)
+        for op in outputs:
+            tf.debugging.assert_type(op, FLOAT_DTYPE)
 
-        # test with FLOAT_DTYPE
-        mean, variance = tf.nn.moments(xn, 0)
-        assert_near(mean, tf.zeros_like(x[0, ...]))
-        assert_near(variance, tf.ones_like(x[0, ...]), atol=1e-2)
+            # test with FLOAT_DTYPE
+            mean, variance = tf.nn.moments(op, 0)
+            assert_near(mean, 0.)
+            assert_near(variance, 1., atol=1e-2)
 
-        # test with tf.float64
-        xc = tf.cast(x, tf.float64)
-        mean, variance = tf.nn.moments(tf.cast(xn, tf.float64), 0)
-        assert_near(mean, tf.zeros_like(xc[0, ...]), atol=1e-8)
-        assert_near(variance, tf.ones_like(xc[0, ...]), atol=1e-8)
+            # test with tf.float64
+            mean, variance = tf.nn.moments(tf.cast(op, tf.float64), 0)
+            assert_near(mean, 0., atol=1e-8)
+            assert_near(variance, 1., atol=1e-8)
 
-        y = normaliser.inverse_transform(xn)
-        assert_near(y, x)
+        assert_near(normaliser.inverse_transform(outputs), inputs)
+
 
 
 class test_ZeroComponentAnalysis(unittest.TestCase):

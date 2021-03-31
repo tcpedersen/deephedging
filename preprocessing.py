@@ -10,7 +10,7 @@ class Normaliser(abc.ABC):
     def fit(self, x):
         """Fit normaliser to data.
         Args:
-            x: (batch_size, None, timesteps + 1)
+            x: list of (batch_size, None)
         """
 
 
@@ -39,26 +39,46 @@ class Normaliser(abc.ABC):
         return self.transform(x)
 
 class MeanVarianceNormaliser(Normaliser):
-    def fit(self, x):
-        # major numerical imprecision in reduce_mean for tf.float32,
-        # so convert to tf.float64 before calculating moments.
-        self.mean, self.variance = tf.nn.moments(tf.cast(x, tf.float64), 0)
-        self.eps = tf.constant(0., tf.float64)
+    def fit(self, inputs):
+        self.mean = []
+        self.variance = []
+
+        for x in inputs:
+            # major numerical imprecision in reduce_mean for tf.float32,
+            # so convert to tf.float64 before calculating moments.
+            m, v = tf.nn.moments(tf.cast(x, tf.float64), 0)
+            self.mean.append(m)
+            self.variance.append(v)
 
 
-    def transform(self, x):
+    def transform(self, inputs):
+        outputs = []
+        for x, mean, variance in zip(inputs, self.mean, self.variance):
+            outputs.append(self._transform(x, mean, variance))
+
+        return outputs
+
+
+    def _transform(self, x, mean, variance):
         xc = tf.cast(x, tf.float64)
-        yc = tf.nn.batch_normalization(
-            xc, self.mean, self.variance, None, None, self.eps)
-        yc = tf.where(tf.equal(self.variance, 0), 0., yc)
+        yc = tf.nn.batch_normalization(xc, mean, variance, None, None, 0.)
+        yc = tf.where(tf.equal(variance, 0), 0., yc)
 
         return tf.cast(yc, x.dtype)
 
 
-    def inverse_transform(self, y):
+    def inverse_transform(self, inputs):
+        outputs = []
+        for y, mean, variance in zip(inputs, self.mean, self.variance):
+            outputs.append(self._inverse_transform(y, mean, variance))
+
+        return outputs
+
+
+    def _inverse_transform(self, y, mean, variance):
         yc = tf.cast(y, tf.float64)
-        xc = tf.sqrt(self.variance + self.eps) * yc + self.mean
-        xc = tf.where(tf.equal(self.variance, 0.), self.mean, xc)
+        xc = tf.sqrt(variance) * yc + mean
+        xc = tf.where(tf.equal(variance, 0.), mean, xc)
 
         return tf.cast(xc, y.dtype)
 

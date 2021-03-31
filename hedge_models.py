@@ -32,8 +32,10 @@ class ProportionalCost(tf.keras.layers.Layer):
 # ==============================================================================
 # === abstract base class of hedge model
 class Hedge(tf.keras.models.Model, abc.ABC):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, append_internal, append_hedge):
+        super().__init__()
+        self.append_internal = bool(append_internal)
+        self.append_hedge = bool(append_hedge)
         self._cost_layers = []
 
 
@@ -69,9 +71,6 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         assert issubclass(type(risk_measure), OCERiskMeasure)
         self.risk_measure = risk_measure
 
-        self.instrument_dim = self.strategy_layers[0].output_dim
-        self.internal_dim = self.strategy_layers[0].internal_dim
-
 
     def train_step(self, data):
         (x, ) = data
@@ -89,7 +88,6 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return {"loss": loss}
 
 
-    @abc.abstractmethod
     def observation(self, step, features, hedge, internal) -> tf.Tensor:
         """Returns the input to the strategy layers.
         Args:
@@ -97,6 +95,15 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         Returns:
             input: (batch_size, )
         """
+        observation = features[step]
+
+        if step > 0:
+            if self.append_internal:
+                observation = tf.concat([observation, internal], 1)
+            if self.append_hedge and self.cost_layers:
+                observation = tf.concat([observation, hedge], 1)
+
+        return observation
 
 
     def costs(self, step, new_hedge, old_hedge, martingales):
@@ -130,13 +137,11 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             costs: (batch_size, )
         """
         features, martingales, payoff = inputs
-        batch_size = tf.shape(martingales)[0]
-
         costs = tf.zeros_like(payoff, FLOAT_DTYPE)
         value = tf.zeros_like(payoff, FLOAT_DTYPE)
 
-        hedge = tf.zeros((batch_size, self.instrument_dim), FLOAT_DTYPE)
-        internal = tf.zeros((batch_size, self.internal_dim), FLOAT_DTYPE)
+        hedge = 0.
+        internal = 0.
 
         for step, strategy in enumerate(self.strategy_layers):
             observation = self.observation(step, features, hedge, internal)
@@ -150,31 +155,11 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return value, costs
 
 
-    @tf.function
-    def hedge_ratios(self, inputs):
-        features, martingales, payoff = inputs
-        batch_size = tf.shape(martingales)[0]
-
-        hedge_ratios = []
-        internal_ratios = []
-
-        hedge = tf.zeros((batch_size, self.instrument_dim), FLOAT_DTYPE)
-        internal = tf.zeros((batch_size, self.internal_dim), FLOAT_DTYPE)
-
-        for step, strategy in enumerate(self.strategy_layers):
-            observation = self.observation(step, features, hedge, internal)
-            hedge, internal = strategy(observation, training=False)
-            hedge_ratios.append(hedge)
-            internal_ratios.append(internal)
-
-        return tf.stack(hedge_ratios, -1), tf.stack(internal_ratios, -1)
-
-
 # ==============================================================================
 # === hedge models
 class DeltaHedge(Hedge):
-    def __init__(self, timesteps, instrument_dim, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, timesteps, instrument_dim):
+        super().__init__(append_internal=False, append_hedge=False)
 
         self._strategy_layers = [
             approximators.FeatureApproximator(instrument_dim)] * timesteps
@@ -185,58 +170,17 @@ class DeltaHedge(Hedge):
         return self._strategy_layers
 
 
-    def observation(self, step, features, hedge, internal) -> tf.Tensor:
-        """Implementation of observation for Hedge. Note features must be
-        hedge ratios.
-        """
-        return features[..., step]
-
-
 class LinearFeatureHedge(Hedge):
-    def __init__(self, timesteps, instrument_dim, mappings, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, timesteps, instrument_dim, mappings):
+        super().__init__(append_internal=False,
+                         append_hedge=(len(mappings) > 1))
 
         self._strategy_layers = []
-        for _ in range(timesteps):
-            self._strategy_layers.append(
-                approximators.LinearFeatureApproximator(
-                    instrument_dim, mappings))
-
-    @property
-    def strategy_layers(self) -> list:
-        return self._strategy_layers
-
-
-    def observation(self, step, features, hedge, internal) -> tf.Tensor:
-        """Implementation of observation for Hedge. Note features must be
-        hedge ratios.
-        """
-        observation = [features[..., step]]
-
-        if self.cost_layers:
-            observation += [hedge]
-
-        return observation
-
-
-class SimpleHedge(Hedge):
-    def __init__(
-            self, timesteps, instrument_dim, num_layers, num_units, **kwargs):
-        super().__init__()
-
-        self._strategy_layers = [approximators.DenseApproximator(
-                num_layers=1,
-                num_units=instrument_dim,
-                output_dim=instrument_dim,
-                internal_dim=0,
-                **kwargs)]
-        for _ in range(timesteps - 1):
-            self._strategy_layers.append(approximators.DenseApproximator(
-                num_layers=num_layers,
-                num_units=num_units,
-                output_dim=instrument_dim,
-                internal_dim=0,
-                **kwargs))
+        for step in range(timesteps):
+            approximator = approximators.LinearFeatureApproximator(
+                instrument_dim=instrument_dim,
+                mappings=[mappings[0]] if step == 0 else mappings)
+            self._strategy_layers.append(approximator)
 
 
     @property
@@ -244,38 +188,39 @@ class SimpleHedge(Hedge):
         return self._strategy_layers
 
 
-    def observation(self, step, features, hedge, internal) -> tf.Tensor:
-        observation = features[..., step]
-
-        if self.cost_layers:
-            observation = tf.concat([observation, hedge], 1)
-
-        return observation
-
-
-class MemoryHedge(Hedge):
+class NeuralHedge(Hedge):
     def __init__(self,
                  timesteps,
                  instrument_dim,
                  internal_dim,
                  num_layers,
                  num_units,
-                **kwargs):
-        super().__init__()
+                 activation):
+        super().__init__(append_internal=(internal_dim > 0), append_hedge=True)
 
-        self._strategy_layers = [approximators.DenseApproximator(
-                num_layers=1,
-                num_units=num_units,
-                output_dim=instrument_dim,
-                internal_dim=internal_dim,
-                **kwargs)]
-        for _ in range(timesteps - 1):
-            self._strategy_layers.append(approximators.DenseApproximator(
-                num_layers=num_layers,
-                num_units=num_units,
-                output_dim=instrument_dim,
-                internal_dim=internal_dim,
-                **kwargs))
+        self._strategy_layers = []
+
+        for step in range(timesteps):
+            self._strategy_layers.append(
+                approximators.DenseApproximator(
+                    num_layers=1 if step == 0 else num_layers,
+                    num_units=1 if step == 0 else num_units,
+                    output_dim=instrument_dim,
+                    internal_dim=internal_dim,
+                    activation=activation)
+                )
+
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
+
+
+class ConstantHedge(Hedge):
+    def __init__(self, timesteps, instrument_dim):
+        super().__init__(False, False)
+        self._strategy_layers = []
+        for step in range(timesteps):
+            self._strategy_layers.append(tf.keras.layers.Lambda(self.zeros))
 
 
     @property
@@ -283,14 +228,8 @@ class MemoryHedge(Hedge):
         return self._strategy_layers
 
 
-    def observation(self, step, features, hedge, internal) -> tf.Tensor:
-        observation = tf.concat([features[..., step], internal], 1)
-
-        if self.cost_layers:
-            observation = tf.concat([observation, hedge], 1)
-
-        return observation
-
+    def zeros(self, inputs, *args, **kwargs):
+        return [tf.zeros_like(inputs, FLOAT_DTYPE)] * 2
 
 # =============================================================================
 # === risk measures

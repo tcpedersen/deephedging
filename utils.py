@@ -6,7 +6,7 @@ import seaborn as sns
 
 from tensorflow_probability.python.internal import special_math
 
-from constants import FLOAT_DTYPE_EPS, FLOAT_DTYPE
+from constants import FLOAT_DTYPE_EPS, FLOAT_DTYPE, DPI
 import hedge_models
 
 ONE_OVER_SQRT_TWO_PI = 1. / tf.sqrt(2. * np.pi)
@@ -106,21 +106,21 @@ class Driver(object):
             self.init_instruments,
             self.init_numeraire,
             size,
-            self.timesteps * (self.frequency + 1),
+            self.timesteps * 2**self.frequency,
             self.risk_neutral,
             **kwargs)
 
-        skip = self.frequency + 1
-        value = self.book.value(time, instruments, numeraire)[...,::skip]
-        delta = self.book.delta(time, instruments, numeraire)[...,::skip]
+        delta = self.book.delta(time, instruments, numeraire)
         payoff = self.book.payoff(time, instruments, numeraire)
+
+        max_lookback = max([case["lookback"] for case in self.testcases])
+        skip = 2**(self.frequency - max_lookback)
 
         sample = {
             "time": time[::skip],
             "instruments": instruments[..., ::skip],
             "numeraire": numeraire[::skip],
-            "value": value,
-            "delta": delta,
+            "delta": delta[..., ::skip],
             "payoff": payoff
             }
 
@@ -128,16 +128,66 @@ class Driver(object):
 
 
     def validate_feature_type(self, feature_type):
-        valid_feature_types = ["log_martingale", "delta"]
-        assert feature_type in valid_feature_types, \
-            f"feature_type '{feature_type}' not in {valid_feature_types}"
+        valid_feature_types = ["log_martingale", "delta",
+                               "lookback_log_martingale"]
+        if not feature_type in valid_feature_types:
+            raise ValueError(f"feature_type '{feature_type}' not in ",
+                             f"{valid_feature_types}.")
+
 
 
     def validate_price_type(self, price_type):
-        valid_price_types = ["indifference", "arbitrage"]
-        assert price_type in valid_price_types, \
-            f"price_type '{price_type}' not in {valid_price_types}"
+        valid_price_types = ["indifference", "arbitrage", "constant"]
+        if not price_type in valid_price_types:
+            raise ValueError(f"price_type '{price_type}' not in ",
+                             f"{valid_price_types}.")
 
+
+    def process_case(self,
+                     name,
+                     model,
+                     risk_measure,
+                     normaliser,
+                     feature_type,
+                     price_type,
+                     lookback):
+        self.validate_feature_type(feature_type)
+        self.validate_price_type(price_type)
+
+        if not issubclass(type(model), hedge_models.Hedge):
+            raise TypeError("model must be subclass of ",
+                            f"{str(hedge_models.Hedge)}.")
+
+        if not issubclass(type(risk_measure), hedge_models.OCERiskMeasure):
+            raise TypeError("risk_measure must be subclass of ",
+                            f"{str(hedge_models.OCERiskMeasure)}.")
+
+        if not model.timesteps == self.timesteps:
+            raise ValueError("mismatch between timesteps in model and driver: ",
+                             f"{model.timesteps} != {self.timesteps}.")
+
+        if lookback is not None:
+            if not isinstance(lookback, int):
+                raise TypeError("if feature_type is {feature_type} then ",
+                                 "lookback must be an integer.")
+            if lookback >= self.frequency:
+                raise ValueError("lookback must be < frequency: ",
+                                 "{self.lookback} >= {self.frequency}.")
+
+        if self.cost is not None:
+            model.add_cost_layers(self.cost)
+
+        case = {"name": str(name),
+                "model": model,
+                "risk_measure": risk_measure,
+                "normaliser": normaliser,
+                "feature_type": feature_type,
+                "price_type": price_type,
+                "lookback": lookback if lookback is not None else 0,
+                "trained": False,
+                "tested": False}
+
+        return case
 
     def add_testcase(self,
                      name,
@@ -145,42 +195,24 @@ class Driver(object):
                      risk_measure,
                      normaliser,
                      feature_type,
-                     price_type):
-        self.validate_feature_type(feature_type)
-        self.validate_price_type(price_type)
-
-        assert issubclass(type(model), hedge_models.Hedge)
-        assert issubclass(type(risk_measure), hedge_models.OCERiskMeasure)
-        assert model.timesteps == self.timesteps
-
-        if self.cost is not None:
-            model.add_cost_layers(self.cost)
-
-        self.testcases.append(
-            {"name": str(name),
-             "model": model,
-             "risk_measure": risk_measure,
-             "normaliser": normaliser,
-             "feature_type": feature_type,
-             "price_type": price_type,
-             "trained": False,
-             "tested": False}
-            )
+                     price_type,
+                     lookback=None):
+        case = self.process_case(name, model, risk_measure, normaliser,
+                                 feature_type, price_type, lookback)
+        self.testcases.append(case)
 
 
     def add_liability_free(self, model, risk_measure, normaliser, feature_type):
-        self.validate_feature_type(feature_type)
-        assert issubclass(type(model), hedge_models.Hedge)
-        assert issubclass(type(risk_measure), hedge_models.OCERiskMeasure)
+        self.liability_free = self.process_case(
+            name="liability free",
+            model=model,
+            risk_measure=risk_measure,
+            normaliser=normaliser,
+            feature_type=feature_type,
+            price_type="constant",
+            lookback=None)
 
-        self.liability_free = {"name": "liability free",
-                               "model": model,
-                               "risk_measure": risk_measure,
-                               "normaliser": normaliser,
-                               "feature_type": feature_type,
-                               "price": 0.,
-                               "trained": False,
-                               "tested": False}
+        self.liability_free["price"] = 0.
 
 
     def normalise_features(self, case):
@@ -188,23 +220,37 @@ class Driver(object):
 
 
     def get_input(self, case, raw_data):
-        instruments = raw_data["instruments"]
         numeraire = raw_data["numeraire"]
 
+        mlookback = max([case["lookback"] for case in self.testcases])
+        mskip = 2**mlookback # skip in martingales
+        fskip = 2**(mlookback - case["lookback"]) # skip in features
+
         if case["feature_type"] == "log_martingale":
-            features = tf.math.log(instruments / numeraire)
+            split = tf.split(
+                raw_data["instruments"][..., ::fskip][..., 1:],
+                self.timesteps,
+                axis=2)
+            split = [raw_data["instruments"][..., 0, tf.newaxis]] + split
+
+            features = [tf.concat(tf.unstack(s, axis=2), 1) for s in split]
+            del split # save memory
+
+            iterator = zip(features, numeraire[::fskip])
+            features = [tf.math.log(f / n) for f, n in iterator]
+
         elif case["feature_type"] == "delta":
-            features = raw_data["delta"] * numeraire
-        else:
-            message = f"feature_type '{case['feature_type']}' is not valid."
-            raise NotImplementedError(message)
+            features = tf.unstack(raw_data["delta"] * raw_data["numeraire"],
+                                  axis=2)
 
         if case["normaliser"] is not None:
              if not case["trained"]:
                  case["normaliser"].fit(features)
              features = case["normaliser"].transform(features)
 
-        return [features, instruments / numeraire, raw_data["payoff"]]
+        martingales = raw_data["instruments"][..., ::mskip] / numeraire[::mskip]
+
+        return [features, martingales, raw_data["payoff"]]
 
 
     def get_risk(self, case, input_data):
@@ -228,7 +274,7 @@ class Driver(object):
 
 
     def train(self, sample_size, epochs, batch_size):
-        raw_data = self.sample(sample_size, use_sobol=True) # TODO remove?
+        raw_data = self.sample(sample_size)
 
         for case in self.testcases:
             input_data = self.get_input(case, raw_data)
@@ -298,14 +344,24 @@ class Driver(object):
         self.assert_case_is_tested(case)
 
         if case["price_type"] == "arbitrage":
-            return self.sample(1)["value"][0, 0]
+            raw_data = self.sample(1)
+            keys = ["time", "instruments", "numeraire"]
+            input_data = [raw_data[key] for key in keys]
+
+            value = self.book.value(*input_data)[0, 0]
+
         elif case["price_type"] == "indifference":
             if self.cost is None and self.risk_neutral:
                 liability_free_risk = 0.
             else:
                 liability_free_risk = self.liability_free["test_risk"]
 
-            return case["test_risk"] - liability_free_risk
+            value = case["test_risk"] - liability_free_risk
+
+        elif case["price_type"] == "constant":
+            return case["price"]
+
+        return value
 
 
     def test_summary(self, file_name=None):
@@ -369,7 +425,7 @@ class Driver(object):
             plt.xlabel(name)
 
             if file_name is not None:
-                plt.savefig(fr"{file_name}-{name}.pdf")
+                plt.savefig(fr"{file_name}-{name}.pdf", dpi=DPI)
             else:
                 plt.show()
 
@@ -389,16 +445,16 @@ class Driver(object):
             alpha = y.mean() - x.mean()
 
             plt.scatter(x, y, s=0.5)
-            plt.plot(x, alpha + x, "--", color="black")
+            plt.plot(x, alpha + x, "--", color="black", dpi=DPI)
 
             plt.show()
 
 
 def plot_markovian_payoff(driver, size, file_name=None):
     raw_data = driver.sample(size)
-    payoff = raw_data[-1]
+    payoff = raw_data["payoff"]
 
-    terminal_spot = raw_data[1][:, 0, -1]
+    terminal_spot = raw_data["instruments"][:, 0, -1]
     key = tf.argsort(terminal_spot)
 
     for case in driver.testcases:
@@ -410,7 +466,8 @@ def plot_markovian_payoff(driver, size, file_name=None):
         plt.plot(tf.gather(terminal_spot, key).numpy(),
                  tf.gather(payoff, key).numpy(), color="black")
         if file_name is not None:
-            plt.savefig(fr"{file_name}-{case['name']}.png") # must be png, as eps/pdf too heavy
+            # must be png, as eps/pdf too heavy
+            plt.savefig(fr"{file_name}-{case['name']}.png", dpi=DPI)
         else:
             plt.show()
 
@@ -434,14 +491,23 @@ def plot_univariate_hedge_ratios(driver, size, file_name=None):
             plt.clim(vmin, vmax)
             plt.colorbar()
             plt.ioff()
-            plt.savefig(fr"{file_name}-{case['name']}-{idx}.png")
+            plt.savefig(fr"{file_name}-{case['name']}-{idx}.png", dpi=DPI)
             plt.close()
 
 
-def plot_barrier_payoff(
-        model, norm_inputs, price, time, instruments, numeraire, book):
-    derivative = book.derivatives[0]["derivative"]
-    crossed = tf.squeeze(tf.reduce_any(derivative.crossed(instruments), 2))
+def plot_univariate_barrier_payoff(driver, size, file_name=None):
+    raw_data = driver.sample(size)
+    derivative = driver.book.derivatives[0]["derivative"]
+
+    for case in driver.testcases:
+        input_data = driver.get_input(case, raw_data)
+        crossed = tf.squeeze(tf.reduce_any(derivative.crossed(raw_data["instruments"]), 2))
+
+
+
+
+
+
     payoff = book.payoff(time, instruments, numeraire)
     xlim = (tf.reduce_min(instruments[:, 0, -1]),
             tf.reduce_max(instruments[:, 0, -1]))

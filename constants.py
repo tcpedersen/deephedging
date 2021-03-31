@@ -21,3 +21,5 @@ FLOAT_DTYPE_EPS = tf.constant(1., FLOAT_DTYPE)
 while FLOAT_DTYPE_EPS + tf.constant(1., FLOAT_DTYPE) != \
     tf.constant(1., FLOAT_DTYPE):
         FLOAT_DTYPE_EPS /= 2.
+
+DPI = 500
