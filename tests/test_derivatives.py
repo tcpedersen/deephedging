@@ -297,68 +297,82 @@ class test_barrier(unittest.TestCase):
         self.run_value_delta(instrument, binary, price_expected)
 
 
-class test_DiscreteGeometricAverage(unittest.TestCase):
-    def test_value_delta(self):
-        maturity, rate, volatility = 1.3, 0.02, 0.3
-        time = tf.constant([0, 0.1, 0.2, 0.6, maturity], FLOAT_DTYPE)
-        mtime = tf.constant([0.1, 0.6, maturity], FLOAT_DTYPE)
-
-        option = derivatives.DiscreteGeometricAverage(
-            maturity, rate, volatility, mtime)
-
-        instrument = tf.constant([[100, 80, 90, 120, 110],
-                                  [110, 121, 131, 120, 85]], FLOAT_DTYPE)
-        numeraire = 1.1 * tf.math.exp(rate * time)
-
-        value_expected = tf.constant([
-            [408.1608111743, 304.0583503949, 349.0025636452, 486.0822045715,
-             455.9051533831],
-            [461.9998080152, 520.6680555699, 570.7326249172, 506.6164183263,
-             396.7001896122]
-            ]) / numeraire[-1]
-
-        delta_expected = tf.constant([
-            [5.3060905453, 4.9409481939, 4.6533675153, 4.8608220457,
-             2.9012146124],
-            [5.4599977311, 5.5939543160, 5.2280851137, 5.0661641833,
-             3.2669427380]
-            ]) / numeraire[-1]
-
-        payoff_expected = value_expected[..., -1]
-
-        mvalue_result = option.mvalue(time, instrument, numeraire)
-        value_result = option.value(time, instrument, numeraire)
-        delta_result = option.delta(time, instrument, numeraire)
-        payoff_result = option.payoff(time, instrument, numeraire)
-
-        mask = option.get_time_mask(time, with_time_zero=True)
-        assert_near(mvalue_result, tf.boolean_mask(value_expected, mask, 1))
-        assert_near(value_result, value_expected)
-        assert_near(delta_result, delta_expected)
-        assert_near(payoff_result, payoff_expected)
-
-
 class test_DiscreteGeometricPutCall(unittest.TestCase):
-    def test_value_delta(self):
-        maturity, rate, volatility = 1.3, 0.02, 0.3
-        time = tf.constant([0, 0.1, 0.2, 0.6, maturity], FLOAT_DTYPE)
-        option = derivatives.DiscreteGeometricPutCall(
-            maturity=maturity,
-            strike=0,
-            rate=rate,
-            volatility=volatility,
+    def setUp(self):
+        self.maturity, self.rate, self.volatility = 1.3, 0.02, 0.3
+        self.strike = 100
+
+        self.time = tf.constant([0, 0.1, 0.6, self.maturity], FLOAT_DTYPE)
+        self.option = derivatives.DiscreteGeometricPutCall(
+            maturity=self.maturity,
+            strike=self.strike,
+            rate=self.rate,
+            volatility=self.volatility,
             theta=1
         )
 
-        instrument = tf.constant([[100, 80, 90, 120, 110],
-                                  [110, 121, 131, 120, 85]], FLOAT_DTYPE)
-        numeraire = 1.1 * tf.math.exp(rate * time)
+        self.instrument = tf.constant([[100, 80, 120, 110],
+                                       [110, 121, 120, 85]], FLOAT_DTYPE)
+        self.numeraire = 1.1 * tf.math.exp(self.rate * self.time)
 
-        benchmark = derivatives.DiscreteGeometricAverage(
-            maturity, rate, volatility, time[1:])
 
-        for method in ["value", "delta", "payoff"]:
-            result = getattr(option, method)(time, instrument, numeraire)
-            expected = getattr(benchmark, method)(time, instrument, numeraire)
+    def test_dga(self):
+        result = self.option._dga(self.time, self.instrument)
+        expected = tf.constant([
+            [1.0000000000, 1.5499189875, 16.9785118357, 455.9051533831],
+            [1.0000000000, 1.6153942662, 17.6957575773, 396.7001896122]],
+            FLOAT_DTYPE)
 
-            assert_near(result, expected, message=f"method: {method}")
+        tf.debugging.assert_near(result, expected)
+
+
+    def test_mean(self):
+        result = self.option._mean(self.time)
+        expected = tf.constant([-0.0305000000, -0.0272500000, -0.0122500000, \
+                                0.0000000000], FLOAT_DTYPE)
+
+        tf.debugging.assert_near(result, expected)
+
+
+    def test_variance(self):
+        result = self.option._variance(self.time)
+        expected = tf.constant([0.1108800000, 0.0956700000, 0.0308700000,
+                                0.0000000000], FLOAT_DTYPE)
+
+        tf.debugging.assert_near(result, expected)
+
+
+    def test_value_delta(self):
+        drift = tf.constant([0.0191846154, 0.0171541667, 0.0045500000],
+                            FLOAT_DTYPE)
+        volatility = tf.constant([0.2920484681, 0.2823561581, 0.2100000000],
+                                 FLOAT_DTYPE)
+
+        gs = tf.constant([
+            [398.1071705535, 297.8632906618, 484.5364955981, 455.9051533831],
+            [450.6200285030, 510.0596651041, 505.0054119235, 396.7001896122]],
+            FLOAT_DTYPE)
+
+        scale = tf.constant([
+            [5.1753932172, 4.8402784733, 4.8453649560, 2.9012146124],
+            [5.3255094278, 5.4799798730, 5.0500541192, 3.2669427380]
+            ], FLOAT_DTYPE)
+
+        result_value = self.option.value(
+            self.time, self.instrument, self.numeraire)
+        result_delta = self.option.delta(
+            self.time, self.instrument, self.numeraire)
+
+        for k, (d, v) in enumerate(zip(drift, volatility)):
+            benchmark = derivatives.PutCall(
+                self.maturity, self.strike, d, v, self.option.theta)
+
+            expected_value = benchmark.value(self.time, gs, self.numeraire)
+            expected_delta = benchmark.delta(self.time, gs, self.numeraire) \
+                * scale
+
+            tf.debugging.assert_near(result_value[..., k],
+                                     expected_value[..., k])
+
+            tf.debugging.assert_near(result_delta[..., k],
+                                     expected_delta[..., k])

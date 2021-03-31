@@ -472,6 +472,30 @@ def plot_markovian_payoff(driver, size, file_name=None):
             plt.show()
 
 
+def plot_geometric_payoff(driver, size, file_name=None):
+    raw_data = driver.sample(size)
+    payoff = raw_data["payoff"]
+
+    derivative = driver.book.derivatives[0]["derivative"]
+    terminal_spot = derivative._dga(
+        raw_data["time"], raw_data["instruments"][:, 0, :])[..., -1]
+    key = tf.argsort(terminal_spot)
+
+    for case in driver.testcases:
+        input_data = driver.get_input(case, raw_data)
+        value, _ = case["model"](input_data)
+
+        plt.figure()
+        plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(), s=0.5)
+        plt.plot(tf.gather(terminal_spot, key).numpy(),
+                 tf.gather(payoff, key).numpy(), color="black")
+        if file_name is not None:
+            # must be png, as eps/pdf too heavy
+            plt.savefig(fr"{file_name}-{case['name']}.png", dpi=DPI)
+        else:
+            plt.show()
+
+
 def plot_univariate_hedge_ratios(driver, size, file_name=None):
     raw_data = driver.sample(size)
 

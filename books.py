@@ -360,38 +360,6 @@ def simple_barrier_book(maturity, spot, strike, barrier, rate, drift, vol,
     return init_instruments, init_numeraire, book
 
 
-def random_discrete_geometric_average_book(
-        maturity: float,
-        monitoring_timesteps: int,
-        book_size: int,
-        instrument_dim: int,
-        num_brownian_motions: int,
-        seed: int):
-
-    assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
-
-    init_instruments, init_numeraire, drift, rate, diffusion = \
-        random_black_scholes_parameters(
-            maturity, instrument_dim, num_brownian_motions, seed)
-
-    instrument_simulator = GBM(rate, drift, diffusion)
-    numeraire_simulator = ConstantBankAccount(rate)
-
-    linker = random_linker(book_size, instrument_dim)
-    exposure = random_sign(book_size, 3 / 4)
-    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
-
-    mtime = book.discretise_time(monitoring_timesteps)[1:]
-
-    for idx, link in enumerate(linker):
-        vol = instrument_simulator.volatility[link]
-        derivative = derivatives.DiscreteGeometricAverage(
-            maturity, rate, vol, mtime)
-        book.add_derivative(derivative, link, exposure[idx])
-
-    return init_instruments, init_numeraire, book
-
-
 def random_dga_putcall_book(
         maturity: float,
         book_size: int,
@@ -421,5 +389,20 @@ def random_dga_putcall_book(
         derivative = derivatives.DiscreteGeometricPutCall(
             maturity, strike, rate, vol, put_call[idx])
         book.add_derivative(derivative, link, exposure[idx])
+
+    return init_instruments, init_numeraire, book
+
+
+def simple_dga_putcall_book(maturity, spot, strike, rate, drift, sigma, theta):
+    init_instruments = tf.constant((spot, ), FLOAT_DTYPE)
+    init_numeraire = tf.constant((1., ), FLOAT_DTYPE)
+
+    instrument_simulator = GBM(rate, drift, [[sigma]])
+    numeraire_simulator = ConstantBankAccount(rate)
+
+    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
+    derivative = derivatives.DiscreteGeometricPutCall(
+        maturity, strike, rate, sigma, theta)
+    book.add_derivative(derivative, 0, 1)
 
     return init_instruments, init_numeraire, book
