@@ -8,20 +8,22 @@ import preprocessing
 import approximators
 
 # ==============================================================================
-folder_name = r"figures\bin"
+folder_name = r"figures\discrete-multivariate\no-cost"
 activation = tf.keras.activations.softplus
 
 # ==============================================================================
 # === hyperparameters
-train_size, test_size, timesteps = int(2**12), int(2**12), 12
+train_size, test_size, timesteps = int(2**18), int(2**18), 12
 hedge_multiplier = 1
 alpha = 0.95
 num_layers, num_units = 2, 15
 
 # ==============================================================================
 # === setup
-init_instruments, init_numeraire, book = books.random_dga_putcall_book(
-    timesteps / 12, 1, 1, 1, 69)
+#init_instruments, init_numeraire, book = books.simple_dga_putcall_book(
+#    timesteps / 12, 100, 100**(timesteps / 12), 0.02, 0.05, 0.4, 1)
+init_instruments, init_numeraire, book = books.random_dga_putcall_book(     
+    timesteps / 12, 25, 10, 10, 69)
 
 driver = utils.Driver(
     timesteps=timesteps * hedge_multiplier,

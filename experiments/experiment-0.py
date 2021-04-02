@@ -5,25 +5,30 @@ import hedge_models
 
 # ==============================================================================
 # === hyperparameters
-train_size, test_size, timesteps = int(2**10), int(2**18), 14
-hedge_multiplier = 1
-alpha = 0.95
+train_size, test_size, timesteps = int(2**16), int(2**16), 14
+frequency = 0 # only > 0 for continuous, else 0
+hedge_multiplier = 2**7
+alpha = 0.99
 
-folder_name = r"figures\discrete-univariate\delta"
+folder_name = r"figures\continuous-univariate\delta"
 
 # ==============================================================================
 # === sample data
-init_instruments, init_numeraire, book = books.simple_dga_putcall_book(
-    timesteps / 250, 100., 100**(timesteps / 250), 0.01, 0.05, 0.4, 1.)
+init_instruments, init_numeraire, book = books.simple_put_call_book(
+    timesteps / 250, 100., 100, 0.02, 0.05, 0.2, 1.)
+# init_instruments, init_numeraire, book = books.simple_dga_putcall_book(
+#     timesteps / 250, 100., 100**(timesteps / 250), 0.02, 0.05, 0.2, 1.)
+# init_instruments, init_numeraire, book = books.simple_barrier_book(
+#     timesteps / 250, 100, 105, 95, 0.02, 0.05, 0.2, 1, -1)
 
 driver = utils.Driver(
     timesteps=timesteps * hedge_multiplier,
-    frequency=0, # no need for frequency
+    frequency=frequency,
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
     cost=None,
-    risk_neutral=False,
+    risk_neutral=True,
     learning_rate=1e-1
     )
 
@@ -38,18 +43,12 @@ driver.add_testcase(
     feature_type="delta",
     price_type="arbitrage")
 
-driver.train(train_size, 1, train_size)
+driver.train(train_size, 100, 2**12)
 driver.test(test_size)
+driver.test_summary()
 
-full_folder_name = fr"{folder_name}/payoff-{hedge_multiplier}"
-utils.plot_geometric_payoff(driver, test_size, file_name=full_folder_name)
+full_folder_name = fr"{folder_name}/payoff-{hedge_multiplier}-{frequency}"
 
-
-
-
-# time, instruments, numeraire = book.sample_paths(
-#     init_instruments, init_numeraire, int(2**24), timesteps, True, True, 0)
-# payoff = book.payoff(time, instruments, numeraire)
-
-# tf.reduce_mean(payoff)
-# #book.value(time, instruments, numeraire)[0, 0]
+# utils.plot_markovian_payoff(driver, test_size)
+# utils.plot_geometric_payoff(driver, test_size)
+# utils.plot_univariate_barrier_payoff(driver, test_size, full_folder_name)

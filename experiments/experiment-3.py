@@ -8,24 +8,24 @@ import preprocessing
 import approximators
 
 # ==============================================================================
-folder_name = r"figures\continuous-univariate\cost"
+folder_name = r"figures\continuous-univariate\no-cost"
 activation = tf.keras.activations.softplus
 
 # ==============================================================================
 # === hyperparameters
 train_size, test_size, timesteps = int(2**18), int(2**18), 14
-hedge_multiplier = 1
-frequency = 6
+hedge_multiplier = 2**0
+frequency = 5 - 0
 alpha = 0.95
 num_layers, num_units = 2, 15
 
 # ==============================================================================
 # === setup
-#init_instruments, init_numeraire, book = books.random_barrier_book(
-#    timesteps / 250, 1, 1, 1, 91)
+# init_instruments, init_numeraire, book = books.random_barrier_book(
+#     timesteps / 250, 25, 10, 10, 69)
 
 init_instruments, init_numeraire, book = books.simple_barrier_book(
-    timesteps / 250, 100, 100, 95, 0.02, 0.05, 0.4, -1, -1)
+    timesteps / 250, 100, 105, 95, 0.02, 0.05, 0.2, 1, -1)
 
 
 driver = utils.Driver(
@@ -34,8 +34,8 @@ driver = utils.Driver(
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
-    cost=1/100,
-    risk_neutral=False,
+    cost=None,
+    risk_neutral=True,
     learning_rate=1e-1
     )
 
@@ -96,7 +96,7 @@ driver.add_testcase(
     price_type="indifference")
 
 
-for lookback in [2, 3, 4]:
+for lookback in [2, 4]:
     driver.add_testcase(
         f"shallow lookback network {lookback}",
         hedge_models.NeuralHedge(
@@ -163,4 +163,4 @@ if driver.cost is not None or not driver.risk_neutral:
 driver.train(train_size, 1000, int(2**10))
 driver.test(test_size)
 driver.test_summary(fr"{folder_name}\test-summary.txt")
-#driver.plot_distributions(fr"{folder_name}\hist", "upper right")
+# driver.plot_distributions(fr"{folder_name}\hist", "upper right")

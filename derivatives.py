@@ -389,9 +389,9 @@ class DiscreteGeometricPutCall(Derivative):
         unscaled = self._apply(time, instrument, numeraire, "delta")
 
         ttm = self.maturity - time
-        padded_ttm = self.maturity - tf.pad(time[:-1], [[1, 0]])
+        dt = self._increments(time, 1)
         dga = self._dga(time, instrument)
-        scale = dga * tf.pow(instrument, ttm - 1) * padded_ttm
+        scale = dga * tf.pow(instrument, ttm - 1) * (self.maturity - time + dt)
 
         return unscaled * scale
 

@@ -101,7 +101,7 @@ class Driver(object):
         self.liability_free = None
 
 
-    def sample(self, size, **kwargs):
+    def sample(self, size, metrics=None, **kwargs):
         time, instruments, numeraire = self.book.sample_paths(
             self.init_instruments,
             self.init_numeraire,
@@ -109,6 +109,9 @@ class Driver(object):
             self.timesteps * 2**self.frequency,
             self.risk_neutral,
             **kwargs)
+
+        if metrics is not None:
+            metrics = [m(time, instruments, numeraire) for m in metrics]
 
         delta = self.book.delta(time, instruments, numeraire)
         payoff = self.book.payoff(time, instruments, numeraire)
@@ -121,7 +124,8 @@ class Driver(object):
             "instruments": instruments[..., ::skip],
             "numeraire": numeraire[::skip],
             "delta": delta[..., ::skip],
-            "payoff": payoff
+            "payoff": payoff,
+            "metrics": metrics
             }
 
         return sample
@@ -241,14 +245,22 @@ class Driver(object):
 
         elif case["feature_type"] == "delta":
             features = tf.unstack(raw_data["delta"] * raw_data["numeraire"],
-                                  axis=2)
+                                  axis=2)[::fskip]
 
         if case["normaliser"] is not None:
              if not case["trained"]:
                  case["normaliser"].fit(features)
              features = case["normaliser"].transform(features)
 
+        features = features[:-1]
         martingales = raw_data["instruments"][..., ::mskip] / numeraire[::mskip]
+
+        if len(features) != self.timesteps:
+            raise RuntimeError(f"len(features): {len(features)} != timesteps.")
+        if tf.shape(martingales)[-1] != self.timesteps + 1:
+            raise RuntimeError("tf.shape(martingales)[-1]: ",
+                               f"{tf.shape(martingales)[-1]} != timesteps.")
+
 
         return [features, martingales, raw_data["payoff"]]
 
@@ -267,7 +279,9 @@ class Driver(object):
             optimizer=optimizer)
 
         case["history"] = case["model"].fit(
-            input_data, callbacks=self.callbacks, **kwargs)
+            input_data, callbacks=self.callbacks,
+            verbose=2,
+            **kwargs)
         case["trained"] = True
 
         case["train_risk"] = self.get_risk(case, input_data)[-1]
@@ -520,38 +534,40 @@ def plot_univariate_hedge_ratios(driver, size, file_name=None):
 
 
 def plot_univariate_barrier_payoff(driver, size, file_name=None):
-    raw_data = driver.sample(size)
-    derivative = driver.book.derivatives[0]["derivative"]
+    def metric(time, instruments, numeraire):
+        derivative = driver.book.derivatives[0]["derivative"]
+
+        return derivative.crossed(instruments[:, 0, :])[..., -1]
+
+    raw_data = driver.sample(size, metrics=[metric])
+    crossed = tf.squeeze(raw_data["metrics"][0])
+
+    terminal_spot = raw_data["instruments"][:, 0, -1]
 
     for case in driver.testcases:
         input_data = driver.get_input(case, raw_data)
-        crossed = tf.squeeze(tf.reduce_any(derivative.crossed(raw_data["instruments"]), 2))
+        value, _ = case["model"](input_data)
 
+        for idx, indices in enumerate([crossed, ~crossed]):
+            m = tf.boolean_mask(terminal_spot, indices, 0)
 
+            key = tf.argsort(m, 0)
+            x = tf.gather(m, key)
 
+            y1 = tf.gather(raw_data["payoff"][indices], key)
+            y2 = tf.gather(tf.boolean_mask(value + case["price"], indices), key)
 
+            plt.figure()
+            # plt.xlim(*xlim)
+            plt.scatter(x, y2.numpy(), s=0.5)
+            plt.plot(x, y1.numpy(), color="black")
 
-
-    payoff = book.payoff(time, instruments, numeraire)
-    xlim = (tf.reduce_min(instruments[:, 0, -1]),
-            tf.reduce_max(instruments[:, 0, -1]))
-
-    value, costs = model(norm_inputs)
-
-    for indices in [crossed, ~crossed]:
-        m = tf.boolean_mask(instruments[..., 0, -1], indices, 0)
-
-        key = tf.argsort(m, 0)
-        x = tf.gather(m, key)
-
-        y1 = tf.gather(payoff[indices], key)
-        y2 = tf.gather(tf.boolean_mask(price + value, indices), key)
-
-        plt.figure()
-        plt.xlim(*xlim)
-        plt.scatter(x, y2, s=0.5)
-        plt.plot(x, y1, color="black")
-        plt.show()
+            if file_name is not None:
+                append = "crossed" if idx == 0 else "non-crossed"
+                plt.savefig(fr"{file_name}-{case['name']}-{append}.png",
+                            dpi=DPI)
+            else:
+                plt.show()
 
 
 def plot_correlation_matrix(driver):
