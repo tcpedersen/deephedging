@@ -36,7 +36,8 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         super().__init__()
         self.append_internal = bool(append_internal)
         self.append_hedge = bool(append_hedge)
-        self._cost_layers = []
+        self.cost_layers = []
+        self.internal_batch = []
 
 
     @property
@@ -51,18 +52,23 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         """Returns the strategy layers."""
 
 
-    @property
-    def cost_layers(self) -> list:
-        """Returns the cost layers or None if no transaction costs."""
-        return self._cost_layers
-
-
     def add_cost_layers(self, cost: float):
-        if self._cost_layers:
+        if self.cost_layers:
             raise ValueError("cost layers already exists.")
 
         for _ in range(self.timesteps):
-            self._cost_layers.append(ProportionalCost(float(cost)))
+            self.cost_layers.append(ProportionalCost(float(cost)))
+
+
+    def add_internal_batch_normalisation(self):
+        if self.internal_batch:
+            raise ValueError("internal batch normalisation already exists.")
+        elif not self.append_internal:
+            raise ValueError("cannot use internal batch normalisation ",
+                             "when append_internal is False.")
+
+        for _ in range(self.timesteps - 1):
+            self.internal_batch.append(tf.keras.layers.BatchNormalization())
 
 
     def compile(self, risk_measure, **kwargs):
@@ -152,6 +158,9 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             value += tf.reduce_sum(tf.multiply(hedge, increment), 1)
             costs += self.costs(step, hedge, old_hedge, martingales)
 
+            if self.internal_batch and step < self.timesteps - 1:
+                internal = self.internal_batch[step](internal, training=training)
+
         return value, costs
 
 
@@ -206,7 +215,7 @@ class NeuralHedge(Hedge):
                     num_layers=1 if step == 0 else num_layers,
                     num_units=1 if step == 0 else num_units,
                     output_dim=instrument_dim,
-                    internal_dim=internal_dim,
+                    internal_dim=internal_dim if step < timesteps - 1 else 0,
                     activation=activation)
                 )
 

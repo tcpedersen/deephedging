@@ -122,7 +122,7 @@ class test_BlackScholesPutCallBook(TestCase):
             1., 100., strike, 0.05, 0.1, 0.2, 1.)
         batch_size, timesteps = 10, 5
 
-        _, instruments, numeraire, _, result = book.gradient_payoff(
+        raw_data = book.gradient_payoff(
             init_instruments=init_instruments,
             init_numeraire=init_numeraire,
             batch_size=batch_size,
@@ -130,8 +130,13 @@ class test_BlackScholesPutCallBook(TestCase):
             frequency=2,
             risk_neutral=True)
 
+        instruments = raw_data["instruments"]
+        numeraire = raw_data["numeraire"]
+        result = raw_data["gradient"]
+
         itm = tf.cast(instruments[..., -1] > strike, FLOAT_DTYPE)
-        expected = (instruments[..., -1] / instruments[:, 0, :]) / numeraire[-1] * itm
+        expected = (instruments[..., -1] / instruments[:, 0, :]) \
+            / numeraire[-1] * itm
 
         assert_near(result[:, 0, :], expected)
 

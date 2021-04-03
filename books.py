@@ -181,24 +181,36 @@ class DerivativeBook(object):
                      timesteps: int,
                      frequency: int,
                      risk_neutral: bool,
-                     exploring_scale: float=1/5) -> tf.Tensor:
+                     exploring_scale: float=1/5,
+                     **kwargs) -> tf.Tensor:
         """Simulate sample paths and compute payoffs with gradients."""
-        time = self.discretise_time(timesteps * (1 + frequency))
+        time = self.discretise_time(timesteps * 2**frequency)
         numeraire = self.sample_numeraire(time, init_numeraire, risk_neutral)
         init_scaled = self._scale_lognormally(
             init_instruments, batch_size, exploring_scale)
-        skip = frequency + 1
+        skip = 2**frequency
 
         with tf.GradientTape() as tape:
             tape.watch(init_scaled)
             instruments = self.instrument_simulator.simulate(
-                time, init_scaled, batch_size, risk_neutral, as_list=True)
+                time,
+                init_scaled,
+                batch_size,
+                risk_neutral,
+                as_list=True,
+                **kwargs)
             payoff = self.payoff(time, tf.stack(instruments, -1), numeraire)
 
         gradient = tf.stack(tape.gradient(payoff, instruments[::skip]), -1)
 
-        return time[::skip], tf.stack(instruments[::skip], -1), numeraire[::skip],\
-            payoff, gradient
+        output = {
+            "time": time[::skip],
+            "instruments": tf.stack(instruments[::skip], -1),
+            "numeraire": numeraire[::skip],
+            "payoff": payoff,
+            "gradient": gradient}
+
+        return output
 
 
 # =============================================================================

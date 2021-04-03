@@ -138,27 +138,55 @@ class DifferentialMeanVarianceNormaliser(object):
         self.ymean, self.yvar = tf.nn.moments(tf.cast(y, tf.float64), 0)
 
 
+    def transform_x(self, x):
+        norm_x = tf.nn.batch_normalization(
+            tf.cast(x, tf.float64), self.xmean, self.xvar, None, None, 0.)
+
+        return tf.cast(norm_x, x.dtype)
+
+    def transform_y(self, y):
+        norm_y = tf.nn.batch_normalization(
+            tf.cast(y, tf.float64), self.ymean, self.yvar, None, None, 0.)
+
+        return tf.cast(norm_y, y.dtype)
+
+    def transform_dydx(self, dydx):
+        norm_dydx = tf.cast(dydx, tf.float64) * tf.sqrt(self.xvar / self.yvar)
+
+        return tf.cast(norm_dydx, dydx.dtype)
+
     def transform(self, x, y, dydx):
         """Assumes:
             x: (batch, dimension, timesteps)
             y: (batch, )
             dydx: (batch, dimension, timesteps)
         """
-        norm_x = tf.nn.batch_normalization(
-            tf.cast(x, tf.float64), self.xmean, self.xvar, None, None, 0.)
-        norm_y = tf.nn.batch_normalization(
-            tf.cast(y, tf.float64), self.ymean, self.yvar, None, None, 0.)
-        norm_dydx = tf.cast(dydx, tf.float64) * tf.sqrt(self.xvar / self.yvar)
+        return self.transform_x(x), self.transform_y(y), \
+            self.transform_dydx(dydx)
 
-        return (tf.cast(v, FLOAT_DTYPE) for v in [norm_x, norm_y, norm_dydx])
+
+    def inverse_transform_x(self, norm_x):
+        x = tf.sqrt(self.xvar) * tf.cast(norm_x, tf.float64) + self.xmean
+
+        return tf.cast(x, norm_x.dtype)
+
+
+    def inverse_transform_y(self, norm_y):
+        y = tf.sqrt(self.yvar) * tf.cast(norm_y, tf.float64) + self.ymean
+
+        return tf.cast(y, norm_y.dtype)
+
+
+    def inverse_transform_dydx(self, norm_dydx):
+        dydx = tf.cast(norm_dydx, tf.float64) * tf.sqrt(self.yvar / self.xvar)
+
+        return tf.cast(dydx, norm_dydx.dtype)
 
 
     def inverse_transform(self, norm_x, norm_y, norm_dydx):
-        x = tf.sqrt(self.xvar) * tf.cast(norm_x, tf.float64) + self.xmean
-        y = tf.sqrt(self.yvar) * tf.cast(norm_y, tf.float64) + self.ymean
-        dydx = tf.cast(norm_dydx, tf.float64) * tf.sqrt(self.yvar / self.xvar)
-
-        return (tf.cast(v, FLOAT_DTYPE) for v in [x, y, dydx])
+        return self.inverse_transform_x(norm_x), \
+            self.inverse_transform_y(norm_y), \
+                self.inverse_transform_dydx(norm_dydx)
 
 
     def fit_transform(self, x, y, dydx):

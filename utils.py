@@ -63,7 +63,7 @@ def precise_mean(x, **kwargs):
 
 # ==============================================================================
 # === experiments
-class Driver(object):
+class HedgeDriver(object):
     def __init__(self,
                  timesteps,
                  frequency,
@@ -154,7 +154,8 @@ class Driver(object):
                      normaliser,
                      feature_type,
                      price_type,
-                     lookback):
+                     lookback,
+                     internal_batch):
         self.validate_feature_type(feature_type)
         self.validate_price_type(price_type)
 
@@ -181,6 +182,9 @@ class Driver(object):
         if self.cost is not None:
             model.add_cost_layers(self.cost)
 
+        if bool(internal_batch):
+            model.add_internal_batch_normalisation()
+
         case = {"name": str(name),
                 "model": model,
                 "risk_measure": risk_measure,
@@ -189,7 +193,8 @@ class Driver(object):
                 "price_type": price_type,
                 "lookback": lookback if lookback is not None else 0,
                 "trained": False,
-                "tested": False}
+                "tested": False,
+                "internal_batch": bool(internal_batch)}
 
         return case
 
@@ -200,9 +205,11 @@ class Driver(object):
                      normaliser,
                      feature_type,
                      price_type,
-                     lookback=None):
+                     lookback=None,
+                     internal_batch=False):
         case = self.process_case(name, model, risk_measure, normaliser,
-                                 feature_type, price_type, lookback)
+                                 feature_type, price_type, lookback,
+                                 internal_batch)
         self.testcases.append(case)
 
 
@@ -214,7 +221,8 @@ class Driver(object):
             normaliser=normaliser,
             feature_type=feature_type,
             price_type="constant",
-            lookback=None)
+            lookback=None,
+            internal_batch=False)
 
         self.liability_free["price"] = 0.
 
@@ -464,7 +472,7 @@ class Driver(object):
             plt.show()
 
 
-def plot_markovian_payoff(driver, size, file_name=None):
+def plot_markovian_payoff(driver, size, price, file_name=None):
     raw_data = driver.sample(size)
     payoff = raw_data["payoff"]
 
@@ -476,7 +484,7 @@ def plot_markovian_payoff(driver, size, file_name=None):
         value, _ = case["model"](input_data)
 
         plt.figure()
-        plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(), s=0.5)
+        plt.scatter(terminal_spot.numpy(), (value + price).numpy(), s=0.5)
         plt.plot(tf.gather(terminal_spot, key).numpy(),
                  tf.gather(payoff, key).numpy(), color="black")
         if file_name is not None:
@@ -533,7 +541,7 @@ def plot_univariate_hedge_ratios(driver, size, file_name=None):
             plt.close()
 
 
-def plot_univariate_barrier_payoff(driver, size, file_name=None):
+def plot_univariate_barrier_payoff(driver, size, price, file_name=None):
     def metric(time, instruments, numeraire):
         derivative = driver.book.derivatives[0]["derivative"]
 
@@ -555,7 +563,7 @@ def plot_univariate_barrier_payoff(driver, size, file_name=None):
             x = tf.gather(m, key)
 
             y1 = tf.gather(raw_data["payoff"][indices], key)
-            y2 = tf.gather(tf.boolean_mask(value + case["price"], indices), key)
+            y2 = tf.gather(tf.boolean_mask(value + price, indices), key)
 
             plt.figure()
             # plt.xlim(*xlim)
@@ -568,6 +576,7 @@ def plot_univariate_barrier_payoff(driver, size, file_name=None):
                             dpi=DPI)
             else:
                 plt.show()
+            plt.close()
 
 
 def plot_correlation_matrix(driver):
