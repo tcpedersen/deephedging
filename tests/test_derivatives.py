@@ -8,7 +8,7 @@ import derivatives
 from constants import FLOAT_DTYPE
 
 class test_putcall(unittest.TestCase):
-    def test_call_value_delta(self):
+    def test_call(self):
         maturity, strike, rate, volatility, theta = 0.25, 90, 0.05, 0.2, 1
         putcall = derivatives.PutCall(maturity, strike, rate, volatility, theta)
 
@@ -29,13 +29,20 @@ class test_putcall(unittest.TestCase):
 
         payoff_expected = price_expected[..., -1]
 
+        adjoint_expected = tf.constant([
+            [0.91, 91 / 110, 1.],
+            [0., 0., 0.]
+            ]) / numeraire[-1]
+
         price_result = putcall.value(time, instrument, numeraire)
         delta_result = putcall.delta(time, instrument, numeraire)
         payoff_result = putcall.payoff(time, instrument, numeraire)
+        adjoint_result = putcall.adjoint(time, instrument, numeraire)
 
         assert_near(price_result, price_expected)
         assert_near(delta_result, delta_expected)
         assert_near(payoff_result, payoff_expected)
+        assert_near(adjoint_result, adjoint_expected)
 
 
     @unittest.skip("tensorflow too imprecise.")
@@ -92,14 +99,20 @@ class test_binary(unittest.TestCase):
             ]) / numeraire
 
         payoff_expected = price_expected[..., -1]
+        adjoint_expected = tf.constant([
+            [0., 0., 0.],
+            [0., 0., 0.]
+            ]) / numeraire[-1]
 
         price_result = binary.value(time, instrument, numeraire)
         delta_result = binary.delta(time, instrument, numeraire)
         payoff_result = binary.payoff(time, instrument, numeraire)
+        adjoint_result = binary.adjoint(time, instrument, numeraire)
 
         assert_near(price_result, price_expected)
         assert_near(delta_result, delta_expected)
         assert_near(payoff_result, payoff_expected)
+        assert_near(adjoint_result, adjoint_expected)
 
 
 class test_barrier(unittest.TestCase):
@@ -112,70 +125,91 @@ class test_barrier(unittest.TestCase):
         self.numeraire = tf.math.exp(self.rate * self.time)
 
 
-    def run_value_delta(self, instrument, binary, price_expected):
-        with tf.GradientTape() as tape:
-            tape.watch(instrument)
-            price_result = binary.value(
-                self.time, instrument, self.numeraire)
-
-        delta_expected = tape.gradient(price_result, instrument)
-        delta_result = binary.delta(
-            self.time, instrument, self.numeraire)
-
-        payoff_expected = price_expected[..., -1]
-        payoff_result = binary.payoff(self.time, instrument, self.numeraire)
-
-        assert_near(price_result, price_expected, atol=1e-4)
-        assert_near(delta_result[..., :-1], delta_expected[..., :-1])
-        assert_near(payoff_result, payoff_expected)
-
-    def test_down_and_out_call_barrier_below_strike(self):
-        instrument = tf.constant([[105, 93,  100],
-                                  [100., 121, 122]], FLOAT_DTYPE)
-
-        barrier = 95
-        binary = derivatives.BarrierCall(
+    def run_test(
+            self,
+            instrument,
+            barrier,
+            outin,
+            updown,
+            price_expected,
+            adjoint_expected
+            ):
+        option = derivatives.BarrierCall(
             self.maturity,
             self.strike,
             barrier,
             self.rate,
             self.volatility,
-            outin=1,
-            updown=-1)
+            outin,
+            updown
+            )
+
+        with tf.GradientTape() as tape:
+            tape.watch(instrument)
+            price_result = option.value(
+                self.time, instrument, self.numeraire)
+        delta_expected = tape.gradient(price_result, instrument)
+
+        mask = tf.equal(delta_expected, delta_expected [..., -1, tf.newaxis])
+        updates = tf.cast(price_expected > 0, FLOAT_DTYPE) / self.numeraire
+        delta_expected = tf.where(mask, updates, delta_expected)
+
+        payoff_result = option.payoff(self.time, instrument, self.numeraire)
+        delta_result = option.delta(self.time, instrument, self.numeraire)
+        adjoint_result = option.adjoint(self.time, instrument, self.numeraire)
+
+        payoff_expected = price_expected[..., -1]
+
+        assert_near(price_result, price_expected, atol=1e-4)
+        assert_near(delta_result[..., :-1], delta_expected[..., :-1])
+        assert_near(payoff_result, payoff_expected)
+        assert_near(adjoint_result, adjoint_expected)
+
+
+    def test_down_and_out_call_barrier_below_strike(self):
+        instrument = tf.constant([[105, 93,  100],
+                                  [100., 121, 122]], FLOAT_DTYPE)
+        barrier = 95
 
         price_expected = tf.constant([
             [10.8202386348, 0., 0.],
             [5.63625810907, 23.8003384294, 22]
             ], FLOAT_DTYPE) / self.numeraire
 
-        self.run_value_delta(instrument, binary, price_expected)
+        adjoint_expected = tf.constant([
+            [0., 0., 0.],
+            [122 / 100, 122 / 121, 122 / 122]
+            ], FLOAT_DTYPE) / self.numeraire[-1]
+
+        self.run_test(
+            instrument=instrument,
+            barrier=barrier,
+            outin=1,
+            updown=-1,
+            price_expected=price_expected,
+            adjoint_expected=adjoint_expected
+            )
 
 
     def test_down_and_out_call_barrier_above_strike(self):
-        instrument = tf.constant([[105, 93,  100],
-                                  [110., 121, 122]], FLOAT_DTYPE)
         barrier = 103
-        binary = derivatives.BarrierCall(
-            self.maturity,
-            self.strike,
-            barrier,
-            self.rate,
-            self.volatility,
-            outin=1,
-            updown=-1)
 
-        price_expected = tf.constant([
-            [3.05322108927, 0., 0.],
-            [10.1365951857, 22.5643920906, 22]
-            ], FLOAT_DTYPE) / self.numeraire
-
-        self.run_value_delta(instrument, binary, price_expected)
+        with self.assertRaises(ValueError):
+            derivatives.BarrierCall(
+                self.maturity,
+                self.strike,
+                barrier,
+                self.rate,
+                self.volatility,
+                outin=1,
+                updown=-1
+                )
 
 
     def test_up_and_out_call_barrier_below_strike(self):
         barrier = 95
 
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(ValueError):
             derivatives.BarrierCall(
                 self.maturity,
                 self.strike,
@@ -190,21 +224,25 @@ class test_barrier(unittest.TestCase):
         instrument = tf.constant([[105, 93,  103],
                                   [107., 121, 122]], FLOAT_DTYPE)
         barrier = 115
-        binary = derivatives.BarrierCall(
-            self.maturity,
-            self.strike,
-            barrier,
-            self.rate,
-            self.volatility,
-            outin=1,
-            updown=1)
 
         price_expected = tf.constant([
             [0.345576012513, 0.950642284198, 3.],
             [0.28015077923, 0., 0.]
             ], FLOAT_DTYPE) / self.numeraire
 
-        self.run_value_delta(instrument, binary, price_expected)
+        adjoint_expected = tf.constant([
+            [103 / 105, 103 / 93, 103 / 103],
+            [0., 0., 0.]
+            ], FLOAT_DTYPE) / self.numeraire[-1]
+
+        self.run_test(
+            instrument=instrument,
+            barrier=barrier,
+            outin=1,
+            updown=1,
+            price_expected=price_expected,
+            adjoint_expected=adjoint_expected
+            )
 
 
     def test_down_and_in_call_barrier_below_strike(self):
@@ -212,21 +250,25 @@ class test_barrier(unittest.TestCase):
                                   [100., 121, 122]], FLOAT_DTYPE)
 
         barrier = 95
-        binary = derivatives.BarrierCall(
-            self.maturity,
-            self.strike,
-            barrier,
-            self.rate,
-            self.volatility,
-            outin=-1,
-            updown=-1)
 
         price_expected = tf.constant([
             [3.03766763227, 3.40522515245, 5],
             [4.81432546312, 0.093422693371, 0]
             ], FLOAT_DTYPE) / self.numeraire
 
-        self.run_value_delta(instrument, binary, price_expected)
+        adjoint_expected = tf.constant([
+            [105 / 105, 105 / 93, 105 / 105],
+            [0., 0., 0.]
+            ]) / self.numeraire[-1]
+
+        self.run_test(
+            instrument=instrument,
+            barrier=barrier,
+            outin=-1,
+            updown=-1,
+            price_expected=price_expected,
+            adjoint_expected=adjoint_expected
+            )
 
 
     def test_down_and_in_call_barrier_above_strike(self):
@@ -234,21 +276,25 @@ class test_barrier(unittest.TestCase):
                                   [110., 121, 122]], FLOAT_DTYPE)
 
         barrier = 102
-        binary = derivatives.BarrierCall(
-            self.maturity,
-            self.strike,
-            barrier,
-            self.rate,
-            self.volatility,
-            outin=-1,
-            updown=-1)
 
         price_expected = tf.constant([
             [9.45567585598, 3.40522515245, 5],
             [6.5068057398, 1.0191439468, 0]
             ], FLOAT_DTYPE) / self.numeraire
 
-        self.run_value_delta(instrument, binary, price_expected)
+        adjoint_expected = tf.constant([
+            [105 / 105, 105 / 93, 105 / 105],
+            [0., 0., 0.]
+            ]) / self.numeraire[-1]
+
+        self.run_test(
+            instrument=instrument,
+            barrier=barrier,
+            outin=-1,
+            updown=-1,
+            price_expected=price_expected,
+            adjoint_expected=adjoint_expected
+            )
 
 
     def test_up_and_in_barrier_below_strike(self):
@@ -256,21 +302,25 @@ class test_barrier(unittest.TestCase):
                                   [90., 121, 95]], FLOAT_DTYPE)
 
         barrier = 97
-        binary = derivatives.BarrierCall(
-            self.maturity,
-            self.strike,
-            barrier,
-            self.rate,
-            self.volatility,
-            outin=-1,
-            updown=1)
 
         price_expected = tf.constant([
             [7.51087217835, 3.40522515245, 0],
             [5.09122207882, 23.8937611227, 0]
             ], FLOAT_DTYPE) / self.numeraire
 
-        self.run_value_delta(instrument, binary, price_expected)
+        adjoint_expected = tf.constant([
+            [0., 0., 0.],
+            [0., 0., 0.]
+            ]) / self.numeraire[-1]
+
+        self.run_test(
+            instrument=instrument,
+            barrier=barrier,
+            outin=-1,
+            updown=1,
+            price_expected=price_expected,
+            adjoint_expected=adjoint_expected
+            )
 
 
     def test_up_and_in_barrier_above_strike(self):
@@ -279,14 +329,6 @@ class test_barrier(unittest.TestCase):
                                   [110, 100, 110]], FLOAT_DTYPE)
 
         barrier = 105
-        binary = derivatives.BarrierCall(
-            self.maturity,
-            self.strike,
-            barrier,
-            self.rate,
-            self.volatility,
-            outin=-1,
-            updown=1)
 
         price_expected = tf.constant([
             [7.49382803156, 8.12283426454, 0],
@@ -294,8 +336,20 @@ class test_barrier(unittest.TestCase):
             [17.662952423095703, 6.888732433319092, 10]
             ], FLOAT_DTYPE) / self.numeraire
 
-        self.run_value_delta(instrument, binary, price_expected)
+        adjoint_expected = tf.constant([
+            [0., 0., 0.],
+            [102 / 90, 102 / 121, 102 / 102],
+            [110 / 110, 110 / 100, 110 / 110]
+            ], FLOAT_DTYPE) / self.numeraire[-1]
 
+        self.run_test(
+            instrument=instrument,
+            barrier=barrier,
+            outin=-1,
+            updown=1,
+            price_expected=price_expected,
+            adjoint_expected=adjoint_expected
+            )
 
 class test_DiscreteGeometricPutCall(unittest.TestCase):
     def setUp(self):
@@ -342,7 +396,7 @@ class test_DiscreteGeometricPutCall(unittest.TestCase):
         tf.debugging.assert_near(result, expected)
 
 
-    def test_value_delta(self):
+    def test_call(self):
         drift = tf.constant([0.0191846154, 0.0171541667, 0.0045500000],
                             FLOAT_DTYPE)
         volatility = tf.constant([0.2920484681, 0.2823561581, 0.2100000000],
@@ -362,6 +416,9 @@ class test_DiscreteGeometricPutCall(unittest.TestCase):
             self.time, self.instrument, self.numeraire)
         result_delta = self.option.delta(
             self.time, self.instrument, self.numeraire)
+        result_adjoint = self.option.adjoint(
+            self.time, self.instrument, self.numeraire)
+
 
         for k, (d, v) in enumerate(zip(drift, volatility)):
             benchmark = derivatives.PutCall(
@@ -370,9 +427,14 @@ class test_DiscreteGeometricPutCall(unittest.TestCase):
             expected_value = benchmark.value(self.time, gs, self.numeraire)
             expected_delta = benchmark.delta(self.time, gs, self.numeraire) \
                 * scale
+            expected_adjoint = benchmark.adjoint(
+                self.time, gs, self.numeraire) * scale
 
             tf.debugging.assert_near(result_value[..., k],
                                      expected_value[..., k])
 
             tf.debugging.assert_near(result_delta[..., k],
                                      expected_delta[..., k])
+
+            tf.debugging.assert_near(result_adjoint[..., k],
+                                     expected_adjoint[..., k])

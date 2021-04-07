@@ -55,11 +55,19 @@ class PeakSchedule:
 
 # ==============================================================================
 # === other
-def precise_func(func, x, **kwargs):
+def cast_apply(func, x, **kwargs):
     return tf.cast(func(tf.cast(x, tf.float64), **kwargs), x.dtype)
 
 def precise_mean(x, **kwargs):
-    return precise_func(tf.reduce_mean, x, **kwargs)
+    return cast_apply(tf.reduce_mean, x, **kwargs)
+
+def precise_confidence_interval(x, alpha, **kwargs):
+    n = tf.cast(tf.shape(x)[0], FLOAT_DTYPE)
+    z1, z2 = norm_qdf((1 - alpha) / 2), norm_qdf((1 + alpha) / 2)
+    mean = precise_mean(x, **kwargs)
+    var = cast_apply(tf.math.reduce_variance, x, **kwargs)
+
+    return mean + z1 * tf.sqrt(var / n), mean + z2 * tf.sqrt(var / n)
 
 # ==============================================================================
 # === experiments

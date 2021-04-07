@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-import numpy as np
 import abc
 
 from utils import norm_cdf, norm_pdf
@@ -8,7 +7,8 @@ from constants import FLOAT_DTYPE, INT_DTYPE
 
 class Derivative(abc.ABC):
     @abc.abstractmethod
-    def payoff(self, time: tf.Tensor, instrument: tf.Tensor, numeraire: tf.Tensor):
+    def payoff(self, time: tf.Tensor, instrument: tf.Tensor,
+               numeraire: tf.Tensor):
         """Computes payoff of derivative in terms of numeraire for each sample
         in batch
         Args:
@@ -17,6 +17,20 @@ class Derivative(abc.ABC):
             numeraire: (timesteps + 1, )
         Returns:
             payoff: (batch_size, )
+        """
+
+
+    @abc.abstractmethod
+    def adjoint(self, time: tf.Tensor, instrument: tf.Tensor,
+                numeraire: tf.Tensor):
+        """Computes the derivative of the payoff wrt. to the instrument for each
+        sample in batch.
+        Args:
+            time: (timesteps + 1)
+            instrument: (batch_size, timesteps + 1)
+            numeraire: (timesteps + 1, )
+        Returns:
+            payoff: (batch_size, timesteps + 1)
         """
 
 
@@ -65,6 +79,14 @@ class PutCall(Derivative):
         return (diff * itm) / numeraire[-1]
 
 
+    def adjoint(self, time, instrument, numeraire):
+        diff = self.theta * (instrument[..., -1, tf.newaxis] - self.strike)
+        itm = tf.cast(diff > 0, FLOAT_DTYPE)
+        chain = instrument[..., -1, tf.newaxis] / instrument
+
+        return self.theta * itm * chain / numeraire[-1]
+
+
     def value(self, time, instrument, numeraire):
         ttm = self.maturity - time
         raw_price = black_price(ttm, instrument, self.strike,
@@ -91,6 +113,10 @@ class BinaryCall(Derivative):
     def payoff(self, time, instrument, numeraire):
         itm = tf.cast(instrument[..., -1] > self.strike, FLOAT_DTYPE)
         return itm / numeraire[-1]
+
+
+    def adjoint(self, time, instrument, numeraire):
+        return tf.zeros_like(instrument)
 
 
     def value(self, time, instrument, numeraire):
@@ -124,8 +150,10 @@ class Barrier(Derivative, abc.ABC):
         self.rate = float(rate)
         self.volatility = float(volatility)
 
-        assert outin == 1 or outin == -1
-        assert updown == 1 or updown == -1
+        if outin not in [-1, 1]:
+            raise ValueError(f"outin must be -1 or 1, not {outin}.")
+        if updown not in [-1, 1]:
+            raise ValueError(f"updown must be -1 or 1, not {updown}.")
 
         self.outin = float(outin)
         self.updown = float(updown)
@@ -137,6 +165,11 @@ class Barrier(Derivative, abc.ABC):
     def raw_payoff(self, time: tf.Tensor, instrument: tf.Tensor,
                    numeraire: tf.Tensor):
         """Returns payoff of European type payoff in terms of numeriare."""
+
+
+    def raw_adjoint(self, time: tf.Tensor, instrument: tf.Tensor,
+                    numeraire: tf.Tensor):
+        """Returns adjoint of European type payoff in terms of numeriare."""
 
 
     @abc.abstractmethod
@@ -165,12 +198,22 @@ class Barrier(Derivative, abc.ABC):
 
     def payoff(self, time, instrument, numeraire):
         raw_payoff = self.raw_payoff(time, instrument, numeraire)
-        has_crossed = self.crossed(instrument)[..., -1]
+        crossed = self.crossed(instrument)[..., -1]
 
         if self.outin == 1:
-            return tf.where(has_crossed, 0., raw_payoff)
+            return tf.where(crossed, 0., raw_payoff)
         else:
-            return tf.where(has_crossed, raw_payoff, 0.)
+            return tf.where(crossed, raw_payoff, 0.)
+
+
+    def adjoint(self, time, instrument, numeraire):
+        raw_adjoint = self.raw_adjoint(time, instrument, numeraire)
+        crossed = self.crossed(instrument)[..., -1, tf.newaxis]
+
+        if self.outin == 1:
+            return tf.where(crossed, 0., raw_adjoint)
+        else:
+            return tf.where(crossed, raw_adjoint, 0.)
 
 
     def value(self, time, instrument, numeraire):
@@ -249,11 +292,15 @@ class BarrierCall(Barrier):
                  volatility: float,
                  outin: float,
                  updown: float):
+        self.maturity = float(maturity)
         self.strike = float(strike)
         super().__init__(barrier, rate, volatility, outin, updown)
 
-        if self.outin == 1 and self.updown == 1:
-            assert self.barrier > self.strike, "derivative is worthless."
+        if self.outin == 1:
+            if self.updown == 1 and self.barrier < self.strike:
+                raise ValueError("derivative is worthless.")
+            elif self.updown == -1 and self.barrier > self.strike:
+                raise ValueError("derivative is worthless.")
 
         self.barrier_call = PutCall(
             maturity, self.barrier, self.rate, self.volatility, 1)
@@ -266,6 +313,11 @@ class BarrierCall(Barrier):
     def raw_payoff(self, time: tf.Tensor, instrument: tf.Tensor,
                    numeraire: tf.Tensor):
         return self.strike_call.payoff(time, instrument, numeraire)
+
+
+    def raw_adjoint(self, time: tf.Tensor, instrument: tf.Tensor,
+                   numeraire: tf.Tensor):
+        return self.strike_call.adjoint(time, instrument, numeraire)
 
 
     def down_value(self, time: tf.Tensor, instrument: tf.Tensor,
@@ -308,6 +360,14 @@ class DiscreteGeometricPutCall(Derivative):
         self.rate = float(rate)
         self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
         self.theta = tf.convert_to_tensor(theta, FLOAT_DTYPE)
+
+        self.putcall = option = PutCall(
+            maturity=self.maturity,
+            strike=self.strike,
+            rate=self.rate,
+            volatility=self.volatility,
+            theta=self.theta
+            )
 
 
     def _increments(self, time, pad):
@@ -359,10 +419,7 @@ class DiscreteGeometricPutCall(Derivative):
         spot = dga * tf.pow(instrument, self.maturity - time)
         output = []
 
-        option = PutCall(
-            self.maturity, self.strike, self.rate, self.volatility, self.theta)
-
-        for k, option in enumerate(self._derivatives(time) + [option]):
+        for k, option in enumerate(self._derivatives(time) + [self.putcall]):
             indices = [0, k, tf.size(time) - 1]
             marginal = getattr(option, method)(
                 time=tf.gather(time, indices),
@@ -375,11 +432,17 @@ class DiscreteGeometricPutCall(Derivative):
 
 
     def payoff(self, time, instrument, numeraire):
-        option = PutCall(
-            self.maturity, self.strike, self.rate, self.volatility, self.theta)
+        return self.putcall.payoff(time, self._dga(time, instrument), numeraire)
 
-        return option.payoff(time, self._dga(time, instrument), numeraire)
 
+    def adjoint(self, time, instrument, numeraire):
+        terminal_dga = self._dga(time, instrument)[..., -1, tf.newaxis]
+        itm = tf.cast(terminal_dga > self.strike, FLOAT_DTYPE)
+
+        dt = self._increments(time, 1)
+        scale = (self.maturity - time + dt) / instrument
+
+        return itm * terminal_dga * scale / numeraire[-1]
 
     def value(self, time, instrument, numeraire):
         return self._apply(time, instrument, numeraire, "value")
@@ -391,9 +454,9 @@ class DiscreteGeometricPutCall(Derivative):
         ttm = self.maturity - time
         dt = self._increments(time, 1)
         dga = self._dga(time, instrument)
-        scale = dga * tf.pow(instrument, ttm - 1) * (self.maturity - time + dt)
+        scale = (self.maturity - time + dt) / instrument
 
-        return unscaled * scale
+        return unscaled * dga * tf.pow(instrument, ttm) * scale
 
 
 # ==============================================================================

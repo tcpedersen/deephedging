@@ -11,13 +11,13 @@ class MemoryTwinNetwork(tf.keras.layers.Layer):
 
         self.activation = tf.keras.activations.softplus
 
-        self.input_layer = BatchNormalization()
+        self.input_layer = BatchNormalization(trainable=False) # TODO remove
         self.dense_layers = []
         self.batch_layers = []
 
         for _ in range(layers - 1):
             self.dense_layers.append(Dense(units=units, use_bias=False))
-            self.batch_layers.append(BatchNormalization())
+            self.batch_layers.append(BatchNormalization(trainable=False)) # TODO
 
         self.output_layer = Dense(units=self.output_dim + self.internal_dim)
 
@@ -27,10 +27,10 @@ class MemoryTwinNetwork(tf.keras.layers.Layer):
         with tf.GradientTape(watch_accessed_variables=False) as tape:
             tape.watch(feature)
             x = tf.concat([feature, internal], -1)
-            x = self.input_layer(x, training=training)
+            # x = self.input_layer(x, training=training)
             for dense, batch in zip(self.dense_layers, self.batch_layers):
                 x = dense(x)
-                x = batch(x, training=training)
+                # x = batch(x, training=training)
                 x = self.activation(x)
             output, internal = tf.split(
                 self.output_layer(x), [self.output_dim, self.internal_dim], 1)
@@ -40,9 +40,10 @@ class MemoryTwinNetwork(tf.keras.layers.Layer):
 
 
 class SemiRecurrentTwinNetwork(tf.keras.models.Model):
-    def __init__(self, timesteps, layers, units, internal_dim):
+    def __init__(self, timesteps, layers, units, internal_dim, use_batchnorm):
         super().__init__()
         self.approximators = []
+        self.timesteps = timesteps
 
         for step in range(timesteps + 1):
             approximator = MemoryTwinNetwork(
@@ -53,6 +54,15 @@ class SemiRecurrentTwinNetwork(tf.keras.models.Model):
 
             self.approximators.append(approximator)
 
+
+        self.internal_batch = []
+        if use_batchnorm:
+            if internal_dim > 0:
+                for _ in range(timesteps):
+                    batch = tf.keras.layers.BatchNormalization()
+                    self.internal_batch.append(batch)
+            else:
+                raise ValueError("cannot use batchnorm if internal_dim <= 0.")
 
     def observation(self, step, inputs, internal) -> tf.Tensor:
         observation = inputs[..., step]
@@ -71,6 +81,13 @@ class SemiRecurrentTwinNetwork(tf.keras.models.Model):
         for step, approx in enumerate(self.approximators):
             observation = self.observation(step, inputs, internal)
             output, internal, gradient = approx(observation, training=training)
+
+            if self.internal_batch and step < self.timesteps:
+                internal = self.internal_batch[step](
+                    internal,
+                    training=training
+                    )
+
             output_func.append(output)
             output_grad.append(gradient)
 

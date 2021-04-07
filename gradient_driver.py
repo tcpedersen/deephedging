@@ -3,6 +3,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 
 import utils
+from constants import FLOAT_DTYPE
 
 class GradientDriver(object):
     def __init__(self,
@@ -22,7 +23,8 @@ class GradientDriver(object):
         self.learning_rate_min = learning_rate_min
         self.learning_rate_max = learning_rate_max
 
-        self.exploring_scale = 1 / 5
+        self.exploring_loc = None
+        self.exploring_scale = None
 
         self.testcases = []
 
@@ -35,23 +37,13 @@ class GradientDriver(object):
             "tested": False
             })
 
-    def sample_with_gradient(self, size, skip):
-        raw_data = self.book.gradient_payoff(
-            init_instruments=self.init_instruments,
-            init_numeraire=self.init_numeraire,
-            batch_size=size,
-            timesteps=self.timesteps,
-            frequency=self.frequency,
-            risk_neutral=True,
-            exploring_scale=self.exploring_scale,
-            use_sobol=True,
-            skip=skip
-            )
 
-        return raw_data
+    def set_exploration(self, loc, scale):
+        self.exploring_loc = tf.convert_to_tensor(loc, FLOAT_DTYPE)
+        self.exploring_scale = tf.convert_to_tensor(scale, FLOAT_DTYPE)
 
 
-    def sample_without_gradient(self, size, skip, metrics=None):
+    def sample(self, size, skip, exploring=True, metrics=None):
         time, instruments, numeraire = self.book.sample_paths(
             init_instruments=self.init_instruments,
             init_numeraire=self.init_numeraire,
@@ -59,11 +51,15 @@ class GradientDriver(object):
             timesteps=self.timesteps * 2**self.frequency,
             risk_neutral=True,
             use_sobol=True,
-            skip=skip)
+            skip=skip,
+            exploring_loc=self.exploring_loc if exploring else None,
+            exploring_scale=self.exploring_scale if exploring else None
+            )
 
-        payoff = self.book.payoff(time, instruments, numeraire)
         value = self.book.value(time, instruments, numeraire)
         delta = self.book.delta(time, instruments, numeraire)
+        payoff = self.book.payoff(time, instruments, numeraire)
+        adjoint = self.book.adjoint(time, instruments, numeraire)
 
         if metrics is not None:
             metrics = [m(time, instruments, numeraire) for m in metrics]
@@ -76,20 +72,24 @@ class GradientDriver(object):
             "value": value[..., ::skip],
             "delta": delta[..., ::skip],
             "payoff": payoff,
+            "adjoint": adjoint[..., ::skip],
             "metrics": metrics
             }
+
+        if not tf.math.reduce_variance(raw_data["payoff"]) > 0:
+            raise RuntimeError("payoff data is degenerate.")
 
         return raw_data
 
 
     def get_input(self, case, raw_data):
-        if not case["trained"]:
-            return case["normaliser"].fit_transform(
-                raw_data["instruments"],
-                raw_data["payoff"],
-                raw_data["gradient"])
+        keys = ["instruments", "payoff", "adjoint"]
+        x, y, dydx = [raw_data[key] for key in keys]
 
-        return case["normaliser"].transform_x(raw_data["instruments"])
+        if not case["trained"]:
+            return case["normaliser"].fit_transform(x, y, dydx)
+
+        return case["normaliser"].transform(x, y, dydx)
 
     def train_case(self, case, batch_size, epochs, raw_data):
         x, y, dydx = self.get_input(case, raw_data)
@@ -97,11 +97,12 @@ class GradientDriver(object):
         lr_schedule = utils.PeakSchedule(
             self.learning_rate_min, self.learning_rate_max, epochs)
         callbacks = [tf.keras.callbacks.LearningRateScheduler(lr_schedule)]
-        weight = 0.5
+
+        weight = 1 / (1 + tf.math.reduce_std(y) / tf.math.reduce_std(dydx))
 
         case["model"].compile(optimizer=tf.keras.optimizers.Adam(),
-                    loss="mean_squared_error",
-                    loss_weights=[weight, 1 - weight])
+                              loss="mean_squared_error",
+                              loss_weights=[weight, 1 - weight])
 
         case["history"] = case["model"].fit(
             x, [y, dydx], batch_size, epochs, callbacks=callbacks)
@@ -111,7 +112,7 @@ class GradientDriver(object):
         return
 
     def train(self, sample_size, epochs, batch_size):
-        raw_data = self.sample_with_gradient(sample_size, skip=0)
+        raw_data = self.sample(sample_size, skip=0, exploring=True)
 
         for case in self.testcases:
             self.train_case(case, batch_size, epochs, raw_data)
@@ -126,10 +127,10 @@ class GradientDriver(object):
 
     def test(self, sample_size):
         skip = self.test_skip()
-        raw_data = self.sample_without_gradient(sample_size, skip)
+        raw_data = self.sample(sample_size, skip, exploring=True)
 
         for case in self.testcases:
-            input_data = self.get_input(case, raw_data)
+            input_data = self.get_input(case, raw_data)[0]
             value, delta = case["model"](input_data, training=False)
 
             case["test_value_mse"] = tf.reduce_mean(
@@ -144,7 +145,7 @@ class GradientDriver(object):
         if not case["trained"]:
             raise ValueError("case must be trained before evaluation.")
 
-        norm_x = self.get_input(case, raw_data)
+        norm_x = self.get_input(case, raw_data)[0]
         norm_y, norm_dydx = case["model"](norm_x, training=False)
 
         return case["normaliser"].inverse_transform(norm_x, norm_y, norm_dydx)
@@ -157,30 +158,47 @@ def barrier_visualiser(driver, sample_size):
         return derivative.crossed(instruments[:, 0, :])[..., ::2**driver.frequency]
 
     skip = driver.test_skip()
-    raw_data = driver.sample_without_gradient(sample_size, skip, [metric])
+    raw_data = driver.sample(
+        sample_size,
+        skip,
+        exploring=True,
+        metrics=[metric]
+        )
     crossed = raw_data["metrics"][0]
 
     for case in driver.testcases:
         x, y, dydx = driver.evaluate_case(case, raw_data)
 
         for step in tf.range(driver.timesteps + 1):
-            for mask in [crossed[..., step], ~crossed[..., step]]:
+
+            names = ["crossed", "non-crossed"]
+            masks = [crossed[..., step], ~crossed[..., step]]
+
+            for name, mask in zip(names, masks):
                 xaxis = tf.boolean_mask(x[..., step], mask)
 
                 # value
                 plt.figure()
                 prediction = tf.boolean_mask(y[..., step], mask)
                 target = tf.boolean_mask(raw_data["value"][..., step], mask)
+                data = tf.boolean_mask(raw_data["payoff"], mask)
 
-#                plt.scatter(xaxis, prediction, color="black", s=0.5)
+                plt.scatter(xaxis, data, color="grey", s=0.5)
                 plt.scatter(xaxis, target, color="red", s=0.5)
+                plt.scatter(xaxis, prediction, color="black", s=0.5)
+
+                plt.title(f"value {step} {name}")
                 plt.show()
 
                 # delta
                 plt.figure()
                 prediction = tf.boolean_mask(dydx[..., step], mask)
                 target = tf.boolean_mask(raw_data["delta"][..., step], mask)
+                data = tf.boolean_mask(raw_data["adjoint"][..., step], mask)
 
-#                plt.scatter(xaxis, prediction, color="black", s=0.5)
+                plt.scatter(xaxis, data, color="grey", s=0.5)
                 plt.scatter(xaxis, target, color="red", s=0.5)
+                plt.scatter(xaxis, prediction, color="black", s=0.5)
+
+                plt.title(f"delta {step} {name}")
                 plt.show()

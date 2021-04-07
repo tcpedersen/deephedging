@@ -54,6 +54,44 @@ class DerivativeBook(object):
         self.derivatives.append(entry)
 
 
+    def link_apply(self, attr, time, instruments, numeraire):
+        """Computes attr of derivative for each derivative according to link.
+        Args:
+            time: (timesteps + 1, )
+            instruments: (batch_size, instrument_dim, timesteps + 1)
+            numeraire: (timesteps + 1, )
+        Returns:
+            marginals: (batch_size, book_size, ...)
+        """
+        marginals = []
+        for entry in self.derivatives:
+            linked = instruments[:, entry["link"], :]
+            func = getattr(entry["derivative"], attr)
+            marginal = func(time, linked, numeraire)
+            marginals.append(marginal * entry["exposure"])
+
+        return tf.stack(marginals, axis=1)
+
+
+    def bucket(self, marginals):
+        """Sums each marginal into a bucket according to link.
+        Args:
+            marginals: (batch_size, book_size, ...)
+        Returns:
+            bucket: (batch_size, instrument_dim, ...)
+        """
+        links = tf.constant([entry["link"] for entry in self.derivatives],
+                            INT_DTYPE)
+
+        v = []
+        for k in range(self.instrument_dim):
+            mask = tf.squeeze(tf.where(links == k), axis=1)
+            v.append(tf.reduce_sum(
+                tf.gather(marginals, mask, axis=1), axis=1, keepdims=True))
+
+        return tf.concat(v, axis=1)
+
+
     def payoff(self, time: tf.Tensor, instruments: tf.Tensor,
                numeraire: tf.Tensor):
         """Computes payoff of book in terms of numeraire for each sample
@@ -65,14 +103,26 @@ class DerivativeBook(object):
         Returns:
             payoff: (batch_size, )
         """
-        payoff = tf.zeros_like(instruments[:, 0, 0], FLOAT_DTYPE)
-        for entry in self.derivatives:
-            linked = instruments[:, entry["link"], :]
-            marginal = entry["derivative"].payoff(time, linked, numeraire)
-            payoff += marginal * entry["exposure"]
+        marginals = self.link_apply("payoff", time, instruments, numeraire)
 
-        return payoff
+        return tf.reduce_sum(marginals, axis=1)
 
+
+    def adjoint(self, time: tf.Tensor, instruments: tf.Tensor,
+                numeraire: tf.Tensor):
+        """Computes adjoint of book in terms of numeraire for each sample
+        in batch.
+        Args:
+            time: (timesteps + 1, )
+            instruments: (batch_size, instrument_dim, timesteps + 1)
+            numeraire: (timesteps + 1, )
+        Returns:
+            value: (batch_size, instrument_dim, timesteps + 1)
+        """
+        marginals = self.link_apply("adjoint", time, instruments, numeraire)
+        bucket = self.bucket(marginals)
+
+        return bucket
 
     def value(self, time: tf.Tensor, instruments: tf.Tensor,
               numeraire: tf.Tensor):
@@ -85,18 +135,14 @@ class DerivativeBook(object):
         Returns:
             value: (batch_size, timesteps + 1)
         """
-        value = tf.zeros_like(instruments[:, 0, :], FLOAT_DTYPE)
-        for entry in self.derivatives:
-            linked = instruments[:, entry["link"], :]
-            marginal = entry["derivative"].value(time, linked, numeraire)
-            value += marginal * entry["exposure"]
+        marginals = self.link_apply("value", time, instruments, numeraire)
 
-        return value
+        return tf.reduce_sum(marginals, axis=1)
 
 
     def delta(self, time: tf.Tensor, instruments: tf.Tensor,
               numeraire: tf.Tensor):
-        """Computes value of book in terms of numeraire for each sample
+        """Computes delta of book in terms of numeraire for each sample
         in batch.
         Args:
             time: (timesteps + 1, )
@@ -105,23 +151,10 @@ class DerivativeBook(object):
         Returns:
             value: (batch_size, instrument_dim, timesteps + 1)
         """
-        marginals = []
-        for entry in self.derivatives:
-            linked = instruments[:, entry["link"], :]
-            marginal = entry["derivative"].delta(time, linked, numeraire)
-            marginals.append(marginal * entry["exposure"])
+        marginals = self.link_apply("delta", time, instruments, numeraire)
+        bucket = self.bucket(marginals)
 
-        marginals = tf.stack(marginals, axis=1)
-        links = tf.constant([entry["link"] for entry in self.derivatives],
-                            INT_DTYPE)
-
-        v = []
-        for k in range(self.instrument_dim):
-            mask = tf.squeeze(tf.where(links == k), axis=1)
-            v.append(tf.reduce_sum(
-                tf.gather(marginals, mask, axis=1), axis=1, keepdims=True))
-
-        return tf.concat(v, axis=1)
+        return bucket
 
 
     def discretise_time(self, timesteps):
@@ -135,14 +168,18 @@ class DerivativeBook(object):
 
         return tf.squeeze(numeraire)
 
-    def sample_paths(self,
-                     init_instruments: tf.Tensor,
-                     init_numeraire: tf.Tensor,
-                     batch_size: int,
-                     timesteps: int,
-                     risk_neutral: bool,
-                     use_sobol: bool=False,
-                     skip: int=0) -> tf.Tensor:
+    def sample_paths(
+            self,
+            init_instruments: tf.Tensor,
+            init_numeraire: tf.Tensor,
+            batch_size: int,
+            timesteps: int,
+            risk_neutral: bool,
+            use_sobol: bool=False,
+            skip: int=0,
+            exploring_loc: float=None,
+            exploring_scale: float=None
+            ) -> tf.Tensor:
         """Simulate sample paths.
         Args:
             init_instruments: (state_dim, )
@@ -156,9 +193,20 @@ class DerivativeBook(object):
             numeraire: (timesteps + 1, )
         """
         time = self.discretise_time(timesteps)
+
+        if exploring_loc is not None and exploring_scale is not None:
+            exploring = self.exploring_start(
+                init_instruments,
+                batch_size,
+                exploring_loc,
+                exploring_scale
+                )
+        else:
+            exploring = init_instruments
+
         instruments = self.instrument_simulator.simulate(
             time=time,
-            init_state=init_instruments,
+            init_state=exploring,
             batch_size=batch_size,
             risk_neutral=risk_neutral,
             use_sobol=use_sobol,
@@ -168,49 +216,15 @@ class DerivativeBook(object):
         return time, instruments, numeraire
 
 
-    def _scale_lognormally(self, state, batch_size, scale):
-        rvs = tf.random.normal((batch_size, tf.shape(state)[-1]))
+    def exploring_start(self, state, batch_size, loc, scale):
+        rvs = tf.random.truncated_normal(
+            shape=(batch_size, tf.shape(state)[-1]),
+            mean=tf.math.log(loc**2 / tf.sqrt(loc**2 + scale**2)),
+            stddev=tf.sqrt(tf.math.log(scale**2 / loc**2 + 1)),
+            dtype=FLOAT_DTYPE
+            )
 
-        return state * tf.exp(-scale**2 / 2. + scale * rvs)
-
-
-    def gradient_payoff(self,
-                     init_instruments: tf.Tensor,
-                     init_numeraire: tf.Tensor,
-                     batch_size: int,
-                     timesteps: int,
-                     frequency: int,
-                     risk_neutral: bool,
-                     exploring_scale: float=1/5,
-                     **kwargs) -> tf.Tensor:
-        """Simulate sample paths and compute payoffs with gradients."""
-        time = self.discretise_time(timesteps * 2**frequency)
-        numeraire = self.sample_numeraire(time, init_numeraire, risk_neutral)
-        init_scaled = self._scale_lognormally(
-            init_instruments, batch_size, exploring_scale)
-        skip = 2**frequency
-
-        with tf.GradientTape() as tape:
-            tape.watch(init_scaled)
-            instruments = self.instrument_simulator.simulate(
-                time,
-                init_scaled,
-                batch_size,
-                risk_neutral,
-                as_list=True,
-                **kwargs)
-            payoff = self.payoff(time, tf.stack(instruments, -1), numeraire)
-
-        gradient = tf.stack(tape.gradient(payoff, instruments[::skip]), -1)
-
-        output = {
-            "time": time[::skip],
-            "instruments": tf.stack(instruments[::skip], -1),
-            "numeraire": numeraire[::skip],
-            "payoff": payoff,
-            "gradient": gradient}
-
-        return output
+        return tf.exp(rvs)
 
 
 # =============================================================================
@@ -337,7 +351,7 @@ def random_barrier_book(
                 upper = call_max_barrier
             elif updown[idx] == -1:
                 lower = call_min_barrier
-                upper = init_instruments[link]
+                upper = min(strike[idx], init_instruments[link]) - 1
         elif outin[idx] == -1:
             if updown[idx] == 1:
                 lower = init_instruments[link]
