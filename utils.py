@@ -125,9 +125,7 @@ class HedgeDriver(object):
         delta = self.book.delta(time, instruments, numeraire)
         payoff = self.book.payoff(time, instruments, numeraire)
 
-        max_lookback = max([case["lookback"] for case in self.testcases])
-        skip = 2**(self.frequency - max_lookback)
-
+        skip = 2**self.frequency
         sample = {
             "time": time[::skip],
             "instruments": instruments[..., ::skip],
@@ -140,15 +138,21 @@ class HedgeDriver(object):
         return sample
 
 
-    def validate_feature_type(self, feature_type):
-        valid_feature_types = ["log_martingale", "delta",
-                               "lookback_log_martingale",
-                               "log_martingale_with_time"]
-        if not feature_type in valid_feature_types:
-            raise ValueError(f"feature_type '{feature_type}' not in ",
-                             f"{valid_feature_types}.")
+    def _translate_feature_function(self, feature_function_name):
+        if not isinstance(feature_function_name, str):
+            raise TypeError("feature_function_name must of type str, not ",
+                            type(feature_function_name))
 
-
+        if feature_function_name == "log_martingale":
+            return self._log_martingale
+        elif feature_function_name == "log_martingale_with_time":
+            return self._log_martingale_with_time
+        elif feature_function_name == "delta":
+            return self._undiscounted_delta
+        else:
+            raise ValueError("feature_function_name: ",
+                             f"'{feature_function_name}' ",
+                             "is not valid.")
 
     def validate_price_type(self, price_type):
         valid_price_types = ["indifference", "arbitrage", "constant"]
@@ -162,14 +166,14 @@ class HedgeDriver(object):
                      model,
                      risk_measure,
                      normaliser,
-                     feature_type,
-                     price_type,
-                     lookback,
-                     internal_batch):
-        self.validate_feature_type(feature_type)
+                     feature_function,
+                     price_type):
+        if not callable(feature_function):
+            feature_function = self._translate_feature_function(
+                feature_function)
         self.validate_price_type(price_type)
 
-        if not issubclass(type(model), hedge_models.Hedge):
+        if not issubclass(type(model), hedge_models.BaseHedge):
             raise TypeError("model must be subclass of ",
                             f"{str(hedge_models.Hedge)}.")
 
@@ -177,34 +181,17 @@ class HedgeDriver(object):
             raise TypeError("risk_measure must be subclass of ",
                             f"{str(hedge_models.OCERiskMeasure)}.")
 
-        if not model.timesteps == self.timesteps:
-            raise ValueError("mismatch between timesteps in model and driver: ",
-                             f"{model.timesteps} != {self.timesteps}.")
-
-        if lookback is not None:
-            if not isinstance(lookback, int):
-                raise TypeError("if feature_type is {feature_type} then ",
-                                 "lookback must be an integer.")
-            if lookback >= self.frequency:
-                raise ValueError("lookback must be < frequency: ",
-                                 "{self.lookback} >= {self.frequency}.")
-
         if self.cost is not None:
-            model.add_cost_layers(self.cost)
-
-        if bool(internal_batch):
-            model.add_internal_batch_normalisation()
+            model.add_cost(self.cost)
 
         case = {"name": str(name),
                 "model": model,
                 "risk_measure": risk_measure,
                 "normaliser": normaliser,
-                "feature_type": feature_type,
                 "price_type": price_type,
-                "lookback": lookback if lookback is not None else 0,
+                "feature_function": feature_function,
                 "trained": False,
-                "tested": False,
-                "internal_batch": bool(internal_batch)}
+                "tested": False}
 
         return case
 
@@ -213,26 +200,27 @@ class HedgeDriver(object):
                      model,
                      risk_measure,
                      normaliser,
-                     feature_type,
-                     price_type,
-                     lookback=None,
-                     internal_batch=False):
+                     feature_function,
+                     price_type):
         case = self.process_case(name, model, risk_measure, normaliser,
-                                 feature_type, price_type, lookback,
-                                 internal_batch)
+                                 feature_function, price_type)
+
         self.testcases.append(case)
 
 
-    def add_liability_free(self, model, risk_measure, normaliser, feature_type):
+    def add_liability_free(
+            self,
+            model,
+            risk_measure,
+            normaliser,
+            feature_function):
         self.liability_free = self.process_case(
             name="liability free",
             model=model,
             risk_measure=risk_measure,
             normaliser=normaliser,
-            feature_type=feature_type,
-            price_type="constant",
-            lookback=None,
-            internal_batch=False)
+            feature_function=feature_function,
+            price_type="constant")
 
         self.liability_free["price"] = 0.
 
@@ -245,43 +233,39 @@ class HedgeDriver(object):
         return features
 
 
-    def _split_and_skip_instruments(self, case, raw_data, skip):
-        split = tf.split(
-            raw_data["instruments"][..., ::skip][..., 1:],
-            self.timesteps,
-            axis=2)
-        split = [raw_data["instruments"][..., 0, tf.newaxis]] + split
+    def _split_by_timesteps(self, tensor):
+        """Splits tensor along last dimension into timesteps pieces ignoring the
+        last entry.
+        Args:
+            tensor: (batch, height, timesteps + 1)
+        Returns:
+            list of (batch, height) of len timesteps.
+        """
+        return tf.unstack(tensor[..., :-1], self.timesteps, -1)
 
-        return [tf.concat(tf.unstack(s, axis=2), 1) for s in split]
 
-    def _append_time(self, time, features):
-        return [tf.pad(f, [[0, 0], [1, 0]], constant_values=t) \
-                for t, f in zip(time, features)]
+    def _log_martingale(self, raw_data):
+        tensor = tf.math.log(raw_data["instruments"] / raw_data["numeraire"])
+
+        return self._split_by_timesteps(tensor)
+
+
+    def _log_martingale_with_time(self, raw_data):
+        time = raw_data["time"]
+        lst = self._log_martingale(raw_data)
+        pad = [[0, 0], [1, 0]]
+
+        return [tf.pad(x, pad, constant_values=t) for t, x in zip(time, lst)]
+
+
+    def _undiscounted_delta(self, raw_data):
+        tensor = raw_data["delta"] * raw_data["numeraire"]
+        return self._split_by_timesteps(tensor)
+
 
     def get_input(self, case, raw_data):
-        numeraire = raw_data["numeraire"]
-        mlookback = max([case["lookback"] for case in self.testcases])
-        mskip = 2**mlookback # skip in martingales
-        fskip = 2**(mlookback - case["lookback"]) # skip in features
-
-        if case["feature_type"] in ["log_martingale",
-                                    "log_martingale_with_time"]:
-            instruments = self._split_and_skip_instruments(
-                case, raw_data, fskip)
-
-            iterator = zip(instruments, numeraire[::fskip])
-            features = [tf.math.log(f / n) for f, n in iterator]
-
-            if case["feature_type"] == "log_martingale_with_time":
-                features = self._append_time(
-                    raw_data["time"][::fskip], features)
-
-        elif case["feature_type"] == "delta":
-            features = tf.unstack(raw_data["delta"] * raw_data["numeraire"],
-                                  axis=2)[::fskip]
-
-        features = self.normalise_features(case, features)[:-1]
-        martingales = raw_data["instruments"][..., ::mskip] / numeraire[::mskip]
+        features = case["feature_function"](raw_data)
+        martingales = raw_data["instruments"] / raw_data["numeraire"]
 
         if len(features) != self.timesteps:
             raise RuntimeError(f"len(features): {len(features)} != timesteps.")
@@ -292,11 +276,39 @@ class HedgeDriver(object):
         return [features, martingales, raw_data["payoff"]]
 
 
+    def evaluate_case(self, case, raw_data):
+        input_data = self.get_input(case, raw_data)
+
+        return case["model"](input_data[:-1])
+
+
     def get_risk(self, case, input_data):
-        value, costs = case["model"](input_data)
+        value, costs = case["model"](input_data[:-1])
         wealth = value - costs - input_data[-1]
 
         return value, costs, wealth, case["model"].risk_measure.evaluate(wealth)
+
+
+    def assert_case_is_trained(self, case):
+        assert case["trained"], f"case '{case['name']}' is not trained yet."
+
+
+    def assert_case_is_tested(self, case):
+        assert case["tested"], f"case '{case['name']}' is not tested yet."
+
+
+    def assert_all_trained(self):
+        for case in self.testcases:
+            self.assert_case_is_trained(case)
+        if self.liability_free is not None:
+            self.assert_case_is_trained(self.liability_free)
+
+
+    def assert_all_tested(self):
+        for case in self.testcases:
+            self.assert_case_is_tested(case)
+        if self.liability_free is not None:
+            self.assert_case_is_tested(self.liability_free)
 
 
     def train_case(self, case, input_data, **kwargs):
@@ -305,11 +317,12 @@ class HedgeDriver(object):
             risk_measure=case["risk_measure"],
             optimizer=optimizer)
 
-        case["model"](input_data) # skip overhead time in build
+        case["model"](input_data[:-1]) # skip overhead time in build
 
         start = perf_counter()
         case["history"] = case["model"].fit(
-            input_data, callbacks=self.callbacks,
+            input_data,
+            callbacks=self.callbacks,
             verbose=2,
             **kwargs)
         end = perf_counter() - start
@@ -350,28 +363,6 @@ class HedgeDriver(object):
         case["test_risk"] = risk
 
         case["tested"] = True
-
-
-    def assert_case_is_trained(self, case):
-        assert case["trained"], f"case '{case['name']}' is not trained yet."
-
-
-    def assert_case_is_tested(self, case):
-        assert case["tested"], f"case '{case['name']}' is not tested yet."
-
-
-    def assert_all_trained(self):
-        for case in self.testcases:
-            self.assert_case_is_trained(case)
-        if self.liability_free is not None:
-            self.assert_case_is_trained(self.liability_free)
-
-
-    def assert_all_tested(self):
-        for case in self.testcases:
-            self.assert_case_is_tested(case)
-        if self.liability_free is not None:
-            self.assert_case_is_tested(self.liability_free)
 
 
     def test(self, sample_size):
@@ -488,8 +479,7 @@ class HedgeDriver(object):
 
         for case in self.testcases:
             plt.figure()
-            input_data = self.get_input(case, raw_data)
-            value, costs = case["model"](input_data)
+            value, costs = self.evaluate_case(case, raw_data)
 
             x = raw_data["payoff"].numpy()
             y = (value - costs).numpy()
@@ -510,8 +500,7 @@ def plot_markovian_payoff(driver, size, price, file_name=None):
     key = tf.argsort(terminal_spot)
 
     for case in driver.testcases:
-        input_data = driver.get_input(case, raw_data)
-        value, _ = case["model"](input_data)
+        value, _ = driver.evaluate_case(case, raw_data)
 
         plt.figure()
         plt.scatter(terminal_spot.numpy(), (value + price).numpy(), s=0.5)
@@ -534,8 +523,7 @@ def plot_geometric_payoff(driver, size, file_name=None):
     key = tf.argsort(terminal_spot)
 
     for case in driver.testcases:
-        input_data = driver.get_input(case, raw_data)
-        value, _ = case["model"](input_data)
+        value, _ = driver.evaluate_case(case, raw_data)
 
         plt.figure()
         plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(), s=0.5)
@@ -583,8 +571,7 @@ def plot_univariate_barrier_payoff(driver, size, price, file_name=None):
     terminal_spot = raw_data["instruments"][:, 0, -1]
 
     for case in driver.testcases:
-        input_data = driver.get_input(case, raw_data)
-        value, _ = case["model"](input_data)
+        value, _ = driver.evaluate_case(case, raw_data)
 
         for idx, indices in enumerate([crossed, ~crossed]):
             m = tf.boolean_mask(terminal_spot, indices, 0)

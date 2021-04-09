@@ -3,7 +3,8 @@ import tensorflow as tf
 
 from tensorflow.keras.layers import Dense, BatchNormalization
 
-class FeedForwardNeuralNetwork(tf.keras.Model):
+
+class FeedForwardNeuralNetwork(tf.keras.layers.Layer):
     def __init__(self, layers, units, output_dim, activation):
         super().__init__()
 
@@ -21,6 +22,55 @@ class FeedForwardNeuralNetwork(tf.keras.Model):
         y = self.output_layer(x)
 
         return y
+
+# ==============================================================================
+# ===
+class SequenceTwinNetwork(tf.keras.Model):
+    def __init__(self, layers, units, activation):
+        super().__init__()
+
+        self.num_layers = layers
+        self.units = units
+        self.activation = activation
+
+
+    def build(self, input_shape):
+        """Implementation of build."""
+        timesteps = input_shape[-1]
+
+        self.networks = []
+        for _ in range(timesteps):
+            network = FeedForwardNeuralNetwork(
+                layers=self.num_layers,
+                units=self.units,
+                output_dim=1,
+                activation=self.activation
+                )
+            self.networks.append(network)
+
+
+    def call(self, inputs, training=False):
+        """Implementation of call.
+        Args:
+            inputs: (batch, dimension, timesteps)
+        Returns:
+            output: (batch, timesteps)
+        """
+        outputs = []
+        gradients = []
+
+        for step, network in enumerate(self.networks):
+            x = inputs[..., step]
+
+            with tf.GradientTape(watch_accessed_variables=False) as tape:
+                tape.watch(x)
+                y = network(x)
+            dydx = tape.gradient(y, x)
+
+            outputs.append(y)
+            gradients.append(dydx)
+
+        return tf.concat(outputs, -1), tf.stack(gradients, -1)
 
 
 class MemoryTwinNetwork(tf.keras.layers.Layer):

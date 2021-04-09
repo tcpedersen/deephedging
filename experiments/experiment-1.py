@@ -8,7 +8,7 @@ import preprocessing
 import books
 
 # ==============================================================================
-folder_name = r"figures\markovian-multivariate\cost"
+folder_name = r"figures\bin"
 
 # ==============================================================================
 # === hyperparameters
@@ -84,9 +84,7 @@ driver.add_testcase(
 
 driver.add_testcase(
     "continuous-time",
-    hedge_models.DeltaHedge(
-        timesteps=timesteps * hedge_multiplier,
-        instrument_dim=book.instrument_dim),
+    hedge_models.FeatureHedge(),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=None,
     feature_type="delta",

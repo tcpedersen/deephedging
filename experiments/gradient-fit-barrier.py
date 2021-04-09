@@ -22,17 +22,17 @@ driver = gradient_driver.GradientDriver(
 
 driver.set_exploration(100., 10.)
 
-# driver.add_testcase(
-#     name="deep memory network",
-#     model=gradient_models.SemiRecurrentTwinNetwork(
-#         timesteps=timesteps,
-#         layers=4,
-#         units=10,
-#         internal_dim=0,
-#         use_batchnorm=False
-#         ),
-#     normaliser=preprocessing.DifferentialMeanVarianceNormaliser()
-#     )
+driver.add_testcase(
+    name="deep memory network",
+    model=gradient_models.SemiRecurrentTwinNetwork(
+        timesteps=timesteps,
+        layers=6,
+        units=5,
+        internal_dim=1,
+        use_batchnorm=False
+        ),
+    normaliser=preprocessing.DifferentialMeanVarianceNormaliser()
+    )
 
 # driver.add_testcase(
 #     name="better memory network (please)",
@@ -44,21 +44,21 @@ driver.set_exploration(100., 10.)
 #     normaliser=preprocessing.DifferentialMeanVarianceNormaliser()
 #     )
 
-driver.add_testcase(
-    name="twin lstm network",
-    model=gradient_models.TwinLSTMNetwork(
-        lstm_cells=3,
-        lstm_units=5,
-        network_layers=6,
-        network_units=5
-        ),
-    normaliser=preprocessing.DifferentialMeanVarianceNormaliser()
-    )
+# driver.add_testcase(
+#     name="twin lstm network",
+#     model=gradient_models.TwinLSTMNetwork(
+#         lstm_cells=3,
+#         lstm_units=5,
+#         network_layers=6,
+#         network_units=5
+#         ),
+#     normaliser=preprocessing.DifferentialMeanVarianceNormaliser()
+#     )
 
-driver.train(train_size, 100, int(2**10))
+driver.train(train_size, 100, 32)
 driver.test(test_size)
 # gradient_driver.barrier_visualiser(driver, train_size)
-# gradient_driver.dga_putcall_visualiser(driver, test_size)
+gradient_driver.dga_putcall_visualiser(driver, test_size)
 
 
 # raw_data = driver.sample(train_size, skip=0, exploring=True)

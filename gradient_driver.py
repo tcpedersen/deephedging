@@ -2,6 +2,8 @@
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
+from time import perf_counter
+
 import utils
 from constants import FLOAT_DTYPE
 
@@ -84,7 +86,7 @@ class GradientDriver(object):
         return raw_data
 
 
-    def get_input(self, case, raw_data):
+    def get_train_input(self, case, raw_data):
         keys = ["instruments", "payoff", "adjoint"]
         x, y, dydx = [raw_data[key] for key in keys]
 
@@ -96,14 +98,27 @@ class GradientDriver(object):
 
         return case["normaliser"].transform(x, y, dydx)
 
+
+    def evaluate_case(self, case, instruments):
+        if not case["trained"]:
+            raise ValueError("case must be trained before evaluation.")
+
+        norm_x = case["normaliser"].transform_x(instruments)
+        norm_y, norm_dydx = case["model"](norm_x)
+        y = case["normaliser"].inverse_transform_y(norm_y)
+        dydx = case["normaliser"].inverse_transform_dydx(norm_dydx)
+
+        return y, dydx
+
+
     def train_case(self, case, batch_size, epochs, raw_data):
-        x, y, dydx = self.get_input(case, raw_data)
+        x, y, dydx = self.get_train_input(case, raw_data)
 
         lr_schedule = utils.PeakSchedule(
             self.learning_rate_min, self.learning_rate_max, epochs)
         callbacks = [
             tf.keras.callbacks.LearningRateScheduler(lr_schedule),
-            tf.keras.callbacks.EarlyStopping("loss", patience=15)]
+            tf.keras.callbacks.EarlyStopping("loss", patience=10)]
 
         if self.weight is None:
             z = tf.math.reduce_std(y) / tf.math.reduce_std(dydx)
@@ -113,9 +128,18 @@ class GradientDriver(object):
                               loss="mean_squared_error",
                               loss_weights=[self.weight, 1 - self.weight])
 
-        case["history"] = case["model"].fit(
-            x, [y, dydx], batch_size, epochs, callbacks=callbacks)
+        case["model"](x) # remove initial overhead time
 
+        start = perf_counter()
+        case["history"] = case["model"].fit(
+            x, [y, dydx],
+            batch_size,
+            epochs,
+            callbacks=callbacks,
+            verbose=2)
+        end = perf_counter() - start
+
+        case["train_time"] = end
         case["trained"] = True
 
         return
@@ -144,7 +168,8 @@ class GradientDriver(object):
         raw_data = self.sample(sample_size, skip, exploring=True)
 
         for case in self.testcases:
-            x, y, dydx = self.evaluate_case(case, raw_data)
+            x = raw_data["instruments"]
+            y, dydx = self.evaluate_case(case, x)
 
             case["test_value_mse"] = tf.reduce_mean(
                 tf.abs(y - raw_data["value"]), axis=0)
@@ -161,7 +186,8 @@ class GradientDriver(object):
         raw_data = self.sample(sample_size, skip, exploring=True)
 
         for case in self.testcases:
-            x, y, dydx = self.evaluate_case(case, raw_data)
+            x = raw_data["instruments"]
+            y, dydx = self.evaluate_case(case, x)
 
             plt.figure()
             plt.boxplot(
@@ -180,17 +206,13 @@ class GradientDriver(object):
         return
 
 
-    def evaluate_case(self, case, raw_data):
-        if not case["trained"]:
-            raise ValueError("case must be trained before evaluation.")
+    def make_feature_function(self, case):
+        def gradient_function(raw_data):
+            y, dydx = self.evaluate_case(case, raw_data["instruments"])
 
-        norm_x = self.get_input(case, raw_data)[0]
-        norm_y, norm_dydx = case["model"](norm_x, training=False)
+            return tf.unstack(dydx * raw_data["numeraire"], axis=-1)[:-1]
 
-        if case["normaliser"] is None:
-            return norm_x, norm_y, norm_dydx
-
-        return case["normaliser"].inverse_transform(norm_x, norm_y, norm_dydx)
+        return gradient_function
 
 
 def barrier_visualiser(driver, sample_size):
@@ -210,7 +232,8 @@ def barrier_visualiser(driver, sample_size):
     crossed = raw_data["metrics"][0]
 
     for case in driver.testcases:
-        x, y, dydx = driver.evaluate_case(case, raw_data)
+        x = raw_data["instruments"]
+        y, dydx = driver.evaluate_case(case, x)
 
         for step in tf.range(driver.timesteps + 1):
 
@@ -257,7 +280,9 @@ def dga_putcall_visualiser(driver, sample_size):
         )
 
     for case in driver.testcases:
-        x, y, dydx = driver.evaluate_case(case, raw_data)
+        x = raw_data["instruments"]
+        y, dydx = driver.evaluate_case(case, x)
+
         instrument = raw_data["instruments"][:, 0, :]
         dga = derivative._dga(raw_data["time"], instrument)
         spot = dga * tf.pow(instrument, derivative.maturity - raw_data["time"])
@@ -286,6 +311,50 @@ def dga_putcall_visualiser(driver, sample_size):
             prediction = dydx[..., 0, step] / scale[..., step]
             target = raw_data["delta"][..., 0, step] / scale[..., step]
             data = raw_data["adjoint"][..., 0, step] / scale[..., step]
+
+            plt.scatter(xaxis, data, color="grey", s=0.5, alpha=0.5)
+            plt.scatter(xaxis, target, color="red", s=0.5, alpha=0.5)
+            plt.scatter(xaxis, prediction, color="blue", s=0.5, alpha=0.5)
+
+            plt.title(f"delta {step}")
+            plt.show()
+
+
+def markovian_visualiser(driver, sample_size):
+    skip = driver.test_skip()
+    raw_data = driver.sample(
+        sample_size,
+        skip,
+        exploring=True
+        )
+
+    for case in driver.testcases:
+        x = raw_data["instruments"]
+        y, dydx = driver.evaluate_case(case, x)
+
+        instrument = raw_data["instruments"][:, 0, :]
+
+        for step in tf.range(driver.timesteps + 1):
+            xaxis = instrument[..., step]
+
+            # value
+            plt.figure()
+            prediction = y[..., step]
+            target = raw_data["value"][..., step]
+            data = raw_data["payoff"]
+
+            plt.scatter(xaxis, data, color="grey", s=0.5, alpha=0.5)
+            plt.scatter(xaxis, target, color="red", s=0.5, alpha=0.5)
+            plt.scatter(xaxis, prediction, color="blue", s=0.5, alpha=0.5)
+
+            plt.title(f"value {step}")
+            plt.show()
+
+            # delta
+            plt.figure()
+            prediction = dydx[..., 0, step]
+            target = raw_data["delta"][..., 0, step]
+            data = raw_data["adjoint"][..., 0, step]
 
             plt.scatter(xaxis, data, color="grey", s=0.5, alpha=0.5)
             plt.scatter(xaxis, target, color="red", s=0.5, alpha=0.5)

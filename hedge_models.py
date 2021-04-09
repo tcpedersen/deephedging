@@ -7,68 +7,17 @@ import approximators
 from constants import FLOAT_DTYPE
 
 # ==============================================================================
-# === Cost Layers
-class ProportionalCost(tf.keras.layers.Layer):
-    def __init__(self, cost, **kwargs):
-        super().__init__(**kwargs)
-        self.cost = tf.constant(float(cost), FLOAT_DTYPE)
-
-
-    def call(self, inputs):
-        """Implementation of call for ProportionalCost.
-        Args:
-            inputs: [shift, martingales]
-                shift: (batch_size, instrument_dim)
-                martingales: (batch_size, instrument_dim)
-        Returns:
-            output: (batch_size, )
-        """
-        shift, martingales = inputs
-
-        return tf.reduce_sum(
-            self.cost * tf.multiply(martingales, tf.abs(shift)), 1)
-
-
-# ==============================================================================
 # === abstract base class of hedge model
-class Hedge(tf.keras.models.Model, abc.ABC):
-    def __init__(self, append_internal, append_hedge):
+class BaseHedge(tf.keras.models.Model, abc.ABC):
+    def __init__(self):
         super().__init__()
-        self.append_internal = bool(append_internal)
-        self.append_hedge = bool(append_hedge)
-        self.cost_layers = []
-        self.internal_batch = []
+        self.cost = 0.
 
 
-    @property
-    def timesteps(self) -> int:
-        """Returns number of steps in hedge."""
-        return len(self.strategy_layers)
-
-
-    @property
-    @abc.abstractmethod
-    def strategy_layers(self) -> list:
-        """Returns the strategy layers."""
-
-
-    def add_cost_layers(self, cost: float):
-        if self.cost_layers:
-            raise ValueError("cost layers already exists.")
-
-        for _ in range(self.timesteps):
-            self.cost_layers.append(ProportionalCost(float(cost)))
-
-
-    def add_internal_batch_normalisation(self):
-        if self.internal_batch:
-            raise ValueError("internal batch normalisation already exists.")
-        elif not self.append_internal:
-            raise ValueError("cannot use internal batch normalisation ",
-                             "when append_internal is False.")
-
-        for _ in range(self.timesteps - 1):
-            self.internal_batch.append(tf.keras.layers.BatchNormalization())
+    def add_cost(self, cost: float):
+        if self.cost > 0:
+            raise ValueError("cost already exists.")
+        self.cost = float(cost)
 
 
     def compile(self, risk_measure, **kwargs):
@@ -82,7 +31,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         (x, ) = data
 
         with tf.GradientTape() as tape:
-            value, costs = self(x, training=True)
+            value, costs = self(x[:-1], training=True)
             wealth = value - costs - x[-1]
             loss = self.risk_measure(wealth)
 
@@ -94,38 +43,14 @@ class Hedge(tf.keras.models.Model, abc.ABC):
         return {"loss": loss}
 
 
-    def observation(self, step, features, hedge, internal) -> tf.Tensor:
-        """Returns the input to the strategy layers.
+    @abc.abstractmethod
+    def strategy(self, features, training=False):
+        """The strategy of the agent.
         Args:
-            see Hedge.call
+            features: list of (batch_size, instrument_dim) of len timesteps
         Returns:
-            input: (batch_size, )
+            strategy: (batch_size, instrument_dim, timesteps)
         """
-        observation = features[step]
-
-        if step > 0:
-            if self.append_internal:
-                observation = tf.concat([observation, internal], 1)
-            if self.append_hedge and self.cost_layers:
-                observation = tf.concat([observation, hedge], 1)
-
-        return observation
-
-
-    def costs(self, step, new_hedge, old_hedge, martingales):
-        """Returns the costs associated with a trade.
-        Args:
-            step: int
-            new_hedge / old_hedge: (batch_size, instrument_dim)
-            martingales: (batch_size, instrument_dim)
-        Returns:
-            (batch_size, )
-        """
-        if self.cost_layers:
-            shift = new_hedge - old_hedge
-            return self.cost_layers[step]([shift, martingales[..., step]])
-
-        return tf.zeros_like(new_hedge[..., 0], FLOAT_DTYPE)
 
 
     def call(self, inputs, training=False):
@@ -142,45 +67,77 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             value: (batch_size, )
             costs: (batch_size, )
         """
-        features, martingales, payoff = inputs
-        costs = tf.zeros_like(payoff, FLOAT_DTYPE)
-        value = tf.zeros_like(payoff, FLOAT_DTYPE)
+        features, martingales = inputs
+        strategy = self.strategy(features, training=training)
 
+        increment = martingales[..., 1:] - martingales[..., :-1]
+        value = tf.reduce_sum(tf.multiply(strategy, increment), [1, 2])
+
+        if self.cost > 0:
+            pad = [[0, 0], [0, 0], [1, 0]]
+            increment = tf.abs(strategy - tf.pad(strategy[..., :-1], pad))
+            proportions = tf.reduce_sum(
+                tf.multiply(martingales[..., :-1], increment), [1, 2])
+            costs = self.cost * proportions
+        else:
+            costs = tf.zeros((tf.shape(martingales)[0], ), FLOAT_DTYPE)
+
+        return value, costs
+
+
+class FeatureHedge(BaseHedge):
+    """Simply returns the features as strategy."""
+    def strategy(self, features, training=False):
+        return tf.stack(features, -1)
+
+
+# ==============================================================================
+# === semi-recurrent hedge strategies
+class SemiRecurrentHedge(BaseHedge):
+    def __init__(self, append_internal, append_hedge):
+        super().__init__()
+        self.append_internal = bool(append_internal)
+        self.append_hedge = bool(append_hedge)
+
+
+    @property
+    @abc.abstractmethod
+    def strategy_layers(self) -> list:
+        """Returns the strategy layers."""
+
+
+    def observation(self, step, features, hedge, internal) -> tf.Tensor:
+        """Returns the input to the strategy layers.
+        Args:
+            see Hedge.call
+        Returns:
+            input: (batch_size, )
+        """
+        observation = features[step]
+
+        if step > 0:
+            if self.append_internal:
+                observation = tf.concat([observation, internal], 1)
+            if self.append_hedge and self.cost > 0:
+                observation = tf.concat([observation, hedge], 1)
+
+        return observation
+
+
+    def strategy(self, features, training):
+        strategies = []
         hedge = 0.
         internal = 0.
 
         for step, strategy in enumerate(self.strategy_layers):
             observation = self.observation(step, features, hedge, internal)
-            old_hedge = hedge
-            hedge, internal = strategy(observation, training)
-            increment = martingales[..., step + 1] - martingales[..., step]
+            hedge, internal = strategy(observation, training=training)
+            strategies.append(hedge)
 
-            value += tf.reduce_sum(tf.multiply(hedge, increment), 1)
-            costs += self.costs(step, hedge, old_hedge, martingales)
-
-            if self.internal_batch and step < self.timesteps - 1:
-                internal = self.internal_batch[step](
-                    internal, training=training)
-
-        return value, costs
+        return tf.stack(strategies, -1)
 
 
-# ==============================================================================
-# === hedge models
-class DeltaHedge(Hedge):
-    def __init__(self, timesteps, instrument_dim):
-        super().__init__(append_internal=False, append_hedge=False)
-
-        self._strategy_layers = [
-            approximators.FeatureApproximator(instrument_dim)] * timesteps
-
-
-    @property
-    def strategy_layers(self) -> list:
-        return self._strategy_layers
-
-
-class LinearFeatureHedge(Hedge):
+class LinearFeatureHedge(SemiRecurrentHedge):
     def __init__(self, timesteps, instrument_dim, mappings):
         super().__init__(append_internal=False,
                          append_hedge=(len(mappings) > 1))
@@ -198,7 +155,7 @@ class LinearFeatureHedge(Hedge):
         return self._strategy_layers
 
 
-class NeuralHedge(Hedge):
+class NeuralHedge(SemiRecurrentHedge):
     def __init__(self,
                  timesteps,
                  instrument_dim,
@@ -224,64 +181,33 @@ class NeuralHedge(Hedge):
     def strategy_layers(self) -> list:
         return self._strategy_layers
 
-
-class ConstantHedge(Hedge):
-    def __init__(self, timesteps, instrument_dim):
-        super().__init__(False, False)
-        self._strategy_layers = []
-        for step in range(timesteps):
-            self._strategy_layers.append(tf.keras.layers.Lambda(self.zeros))
-
-
-    @property
-    def strategy_layers(self) -> list:
-        return self._strategy_layers
-
-
-    def zeros(self, inputs, *args, **kwargs):
-        return [tf.zeros_like(inputs, FLOAT_DTYPE)] * 2
-
-
-class LSTMHedge(Hedge):
-    def __init__(self, timesteps, instrument_dim, lstm_cells, lstm_units):
-        super().__init__(False, False)
-
+# ==============================================================================
+# === fully recurrent hedge strategies
+class RecurrentHedge(BaseHedge):
+    def __init__(self, timesteps, rnn, cells, units, instrument_dim):
+        super().__init__()
         self.rnn = []
-        for _ in range(lstm_cells):
-            cell = tf.keras.layers.LSTM(lstm_units, return_sequences=True)
+        for _ in range(cells):
+            cell = rnn(units, return_sequences=True)
             self.rnn.append(cell)
 
-        self._strategy_layers = []
+        self.output_layers = []
         for _ in range(timesteps):
             layer = tf.keras.layers.Dense(instrument_dim)
-            self._strategy_layers.append(layer)
+            self.output_layers.append(layer)
 
 
-    @property
-    def strategy_layers(self) -> list:
-        return self._strategy_layers
-
-
-    def call(self, inputs, training=False):
-        """Reimplementation of call."""
-        features, martingales, payoff = inputs
-        costs = tf.zeros_like(payoff, FLOAT_DTYPE)
-        value = tf.zeros_like(payoff, FLOAT_DTYPE)
-        hedge = 0.
-
+    def strategy(self, features, training=False):
         sequence = tf.stack(features, 1)
         for network in self.rnn:
             sequence = network(sequence)
 
-        for step, strategy in enumerate(self.strategy_layers):
-            old_hedge = hedge
-            hedge = strategy(sequence[:, step, :])
-            increment = martingales[..., step + 1] - martingales[..., step]
+        strategies = []
+        for step, layer in enumerate(self.output_layers):
+            hedge = layer(sequence[:, step, :], training=training)
+            strategies.append(hedge)
 
-            value += tf.reduce_sum(tf.multiply(hedge, increment), 1)
-            costs += self.costs(step, hedge, old_hedge, martingales)
-
-        return value, costs
+        return tf.stack(strategies, -1)
 
 
 # =============================================================================

@@ -16,7 +16,7 @@ alpha = 0.95
 init_instruments, init_numeraire, book = simple_put_call_book(
     1., 100., 105., 0.05, 0.1, 0.2, 1.)
 
-driver = utils.Driver(
+driver = utils.HedgeDriver(
     timesteps=timesteps,
     frequency=0, # no need for frequency
     init_instruments=init_instruments,
@@ -29,16 +29,13 @@ driver = utils.Driver(
 
 driver.add_testcase(
     "delta",
-    hedge_models.DeltaHedge(
-        timesteps=timesteps,
-        instrument_dim=len(init_instruments)
-    ),
+    hedge_models.FeatureHedge(),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=None,
     feature_type="delta",
     price_type="arbitrage")
 
-driver.train(train_size, 1, 1024)
+driver.train(train_size, 1, int(2**10))
 driver.test(test_size)
 
 # ==============================================================================

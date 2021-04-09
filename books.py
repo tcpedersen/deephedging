@@ -354,7 +354,7 @@ def random_barrier_book(
                 upper = min(strike[idx], init_instruments[link]) - 1
         elif outin[idx] == -1:
             if updown[idx] == 1:
-                lower = init_instruments[link]
+                lower = max(strike[idx], init_instruments[link]) + 1
                 upper = call_max_barrier
             elif updown[idx] == -1:
                 lower = call_min_barrier

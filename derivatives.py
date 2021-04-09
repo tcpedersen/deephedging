@@ -150,15 +150,17 @@ class Barrier(Derivative, abc.ABC):
         self.rate = float(rate)
         self.volatility = float(volatility)
 
-        if outin == "out":
-            outin = 1
-        elif outin == "in":
-            outin = -1
 
-        if updown == "up":
-            updown = 1
-        elif updown == "down":
-            updown = -1
+        if isinstance(outin, str):
+            if outin == "out":
+                outin = 1
+            elif outin == "in":
+                outin = -1
+        if isinstance(updown, str):
+            if updown == "up":
+                updown = 1
+            elif updown == "down":
+                updown = -1
 
         if outin not in [-1, 1]:
             raise ValueError(f"outin must be -1 or 1, not {outin}.")
