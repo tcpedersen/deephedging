@@ -298,29 +298,16 @@ class test_barrier(unittest.TestCase):
 
 
     def test_up_and_in_barrier_below_strike(self):
-        instrument = tf.constant([[95, 93,  96],
-                                  [90., 121, 95]], FLOAT_DTYPE)
-
         barrier = 97
-
-        price_expected = tf.constant([
-            [7.51087217835, 3.40522515245, 0],
-            [5.09122207882, 23.8937611227, 0]
-            ], FLOAT_DTYPE) / self.numeraire
-
-        adjoint_expected = tf.constant([
-            [0., 0., 0.],
-            [0., 0., 0.]
-            ]) / self.numeraire[-1]
-
-        self.run_test(
-            instrument=instrument,
-            barrier=barrier,
-            outin=-1,
-            updown=1,
-            price_expected=price_expected,
-            adjoint_expected=adjoint_expected
-            )
+        with self.assertRaises(ValueError):
+            derivatives.BarrierCall(
+                self.maturity,
+                self.strike,
+                barrier,
+                self.rate,
+                self.volatility,
+                outin=-1,
+                updown=1)
 
 
     def test_up_and_in_barrier_above_strike(self):

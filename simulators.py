@@ -8,6 +8,10 @@ from constants import FLOAT_DTYPE
 
 class Simulator(abc.ABC):
     @property
+    def max_size(self) -> int:
+        return int(2**25)
+
+    @property
     def correlation(self) -> tf.Tensor:
         """Returns the correlation matrix."""
         return self._correlation
@@ -67,8 +71,25 @@ class Simulator(abc.ABC):
         """
 
 
+    def _split_with_remainder(self, tensor, size):
+        return tf.split(tensor, tf.arange)
+
+
+    def _simulate_batch(self, time, init_state, batch_size, risk_neutral,
+                        use_sobol, skip):
+        increment = time[1:] - time[:-1]
+        timesteps = len(time) - 1
+        rvs = self.rvs(batch_size, timesteps, use_sobol=use_sobol, skip=skip)
+
+        paths = [init_state]
+        for idx, dt in enumerate(increment):
+            v = self.advance(paths[-1], rvs[:, idx, :], dt, risk_neutral)
+            paths.append(v)
+
+        return tf.stack(paths, 2)
+
     def simulate(self, time, init_state, batch_size, risk_neutral,
-                 as_list=False, use_sobol=False, skip=0):
+                 use_sobol=False, skip=0):
         """Simulates paths.
         Args:
             time: (time_steps + 1, )
@@ -78,22 +99,30 @@ class Simulator(abc.ABC):
         Returns:
             paths: (batch_size, state_dim, timesteps + 1)
         """
-        increment = time[1:] - time[:-1]
-        rvs = self.rvs(batch_size, len(time) - 1,
-                       use_sobol=use_sobol, skip=skip)
-
         if tf.equal(len(tf.shape(init_state)), 1):
-            paths = [tf.tile(init_state[tf.newaxis, :], (batch_size, 1))]
-        elif tf.equal(len(tf.shape(init_state)), 2):
-            paths = [init_state]
-        else:
-            raise ValueError("dimension of init_state > 2.")
+            init_state = tf.tile(init_state[tf.newaxis, :], (batch_size, 1))
 
-        for idx, dt in enumerate(increment):
-            paths.append(
-                self.advance(paths[-1], rvs[:, idx, :], dt, risk_neutral))
+        state_dim = tf.shape(init_state)[-1]
+        mini_batch_size = min(
+            self.max_size // (len(time) * state_dim), batch_size)
+        num_splits = int(batch_size // mini_batch_size)
+        size_split = [mini_batch_size] * num_splits
+        size_split += [batch_size - sum(size_split)]
 
-        return paths if as_list else tf.stack(paths, 2)
+        init_state_split = tf.split(init_state, size_split)
+        skip_values = skip + tf.cumsum(size_split) - mini_batch_size
+        paths = []
+
+        for init, skip in zip(init_state_split, skip_values):
+            if tf.equal(tf.size(init), 0):
+                continue
+
+            size = tf.shape(init)[0]
+            path = self._simulate_batch(time, init, size, risk_neutral,
+                                        use_sobol=use_sobol, skip=skip)
+            paths.append(path)
+
+        return tf.concat(paths, 0)
 
 
 class GBM(Simulator):
