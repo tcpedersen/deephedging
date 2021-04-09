@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from time import perf_counter
 from tensorflow_probability.python.internal import special_math
 
 from constants import FLOAT_DTYPE_EPS, FLOAT_DTYPE, DPI
@@ -94,7 +95,7 @@ class HedgeDriver(object):
 
         early_stopping = tf.keras.callbacks.EarlyStopping(
             monitor="loss",
-            patience=10,
+            patience=5,
             min_delta=1e-4,
             restore_best_weights=True
         )
@@ -141,7 +142,8 @@ class HedgeDriver(object):
 
     def validate_feature_type(self, feature_type):
         valid_feature_types = ["log_martingale", "delta",
-                               "lookback_log_martingale"]
+                               "lookback_log_martingale",
+                               "log_martingale_with_time"]
         if not feature_type in valid_feature_types:
             raise ValueError(f"feature_type '{feature_type}' not in ",
                              f"{valid_feature_types}.")
@@ -235,40 +237,50 @@ class HedgeDriver(object):
         self.liability_free["price"] = 0.
 
 
-    def normalise_features(self, case):
-        return case["feature_type"] not in ["delta"]
+    def normalise_features(self, case, features):
+        if case["normaliser"] is not None:
+             if not case["trained"]:
+                 case["normaliser"].fit(features)
+             return case["normaliser"].transform(features)
+        return features
 
+
+    def _split_and_skip_instruments(self, case, raw_data, skip):
+        split = tf.split(
+            raw_data["instruments"][..., ::skip][..., 1:],
+            self.timesteps,
+            axis=2)
+        split = [raw_data["instruments"][..., 0, tf.newaxis]] + split
+
+        return [tf.concat(tf.unstack(s, axis=2), 1) for s in split]
+
+    def _append_time(self, time, features):
+        return [tf.pad(f, [[0, 0], [1, 0]], constant_values=t) \
+                for t, f in zip(time, features)]
 
     def get_input(self, case, raw_data):
         numeraire = raw_data["numeraire"]
-
         mlookback = max([case["lookback"] for case in self.testcases])
         mskip = 2**mlookback # skip in martingales
         fskip = 2**(mlookback - case["lookback"]) # skip in features
 
-        if case["feature_type"] == "log_martingale":
-            split = tf.split(
-                raw_data["instruments"][..., ::fskip][..., 1:],
-                self.timesteps,
-                axis=2)
-            split = [raw_data["instruments"][..., 0, tf.newaxis]] + split
+        if case["feature_type"] in ["log_martingale",
+                                    "log_martingale_with_time"]:
+            instruments = self._split_and_skip_instruments(
+                case, raw_data, fskip)
 
-            features = [tf.concat(tf.unstack(s, axis=2), 1) for s in split]
-            del split # save memory
-
-            iterator = zip(features, numeraire[::fskip])
+            iterator = zip(instruments, numeraire[::fskip])
             features = [tf.math.log(f / n) for f, n in iterator]
+
+            if case["feature_type"] == "log_martingale_with_time":
+                features = self._append_time(
+                    raw_data["time"][::fskip], features)
 
         elif case["feature_type"] == "delta":
             features = tf.unstack(raw_data["delta"] * raw_data["numeraire"],
                                   axis=2)[::fskip]
 
-        if case["normaliser"] is not None:
-             if not case["trained"]:
-                 case["normaliser"].fit(features)
-             features = case["normaliser"].transform(features)
-
-        features = features[:-1]
+        features = self.normalise_features(case, features)[:-1]
         martingales = raw_data["instruments"][..., ::mskip] / numeraire[::mskip]
 
         if len(features) != self.timesteps:
@@ -276,7 +288,6 @@ class HedgeDriver(object):
         if tf.shape(martingales)[-1] != self.timesteps + 1:
             raise RuntimeError("tf.shape(martingales)[-1]: ",
                                f"{tf.shape(martingales)[-1]} != timesteps.")
-
 
         return [features, martingales, raw_data["payoff"]]
 
@@ -294,10 +305,21 @@ class HedgeDriver(object):
             risk_measure=case["risk_measure"],
             optimizer=optimizer)
 
+        case["model"](input_data) # skip overhead time in build
+
+        start = perf_counter()
         case["history"] = case["model"].fit(
             input_data, callbacks=self.callbacks,
             verbose=2,
             **kwargs)
+        end = perf_counter() - start
+
+        case["trainable_variables"] = tf.reduce_sum(
+            [tf.size(w) for w in case["model"].trainable_variables])
+        case["non_trainable_variables"] = tf.reduce_sum(
+            [tf.size(w) for w in case["model"].non_trainable_variables])
+
+        case["train_time"] = end
         case["trained"] = True
 
         case["train_risk"] = self.get_risk(case, input_data)[-1]
@@ -397,26 +419,26 @@ class HedgeDriver(object):
     def test_summary(self, file_name=None):
         self.assert_all_tested()
 
-        block_size = 17
         case_size = max([len(case["name"]) for case in self.testcases]) + 1
 
         header_titles = ["value", "costs", "wealth",
-                         "risk (train)", "risk (test)", "price"]
+                         "risk (train)", "risk (test)",
+                         "price", "training time",
+                         "trainable variables", "non-trainable variables"]
+        block_size = max([len(title) for title in header_titles]) + 3
+
         header = "".rjust(case_size) + "".join(
             [ht.rjust(block_size) for ht in header_titles])
         body = ""
         print_keys = ["test_value", "test_costs", "test_wealth",
-                      "train_risk", "test_risk"]
+                      "train_risk", "test_risk", "price", "train_time",
+                      "trainable_variables", "non_trainable_variables"]
 
         extra = [self.liability_free] if self.liability_free is not None else []
         for case in self.testcases + extra:
             body += case["name"].ljust(case_size)
             for val in [case[key] for key in print_keys]:
                 body += f"{val:.4f}".rjust(block_size)
-
-            price = case["price"]
-            body += f"{price: .4f}".rjust(block_size)
-
             body += "\n"
 
         summary = header + "\n" + body

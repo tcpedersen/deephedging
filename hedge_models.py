@@ -135,7 +135,7 @@ class Hedge(tf.keras.models.Model, abc.ABC):
 
         Args:
             inputs: [features, martingales, payoff]
-                features: (batch_size, None, timesteps)
+                features: list of (batch_size, instrument_dim) of len timesteps
                 martingales: (batch_size, instrument_dim, timesteps + 1)
                 payoff: (batch_size, ) payoff at time timesteps + 1
         Returns:
@@ -159,7 +159,8 @@ class Hedge(tf.keras.models.Model, abc.ABC):
             costs += self.costs(step, hedge, old_hedge, martingales)
 
             if self.internal_batch and step < self.timesteps - 1:
-                internal = self.internal_batch[step](internal, training=training)
+                internal = self.internal_batch[step](
+                    internal, training=training)
 
         return value, costs
 
@@ -239,6 +240,49 @@ class ConstantHedge(Hedge):
 
     def zeros(self, inputs, *args, **kwargs):
         return [tf.zeros_like(inputs, FLOAT_DTYPE)] * 2
+
+
+class LSTMHedge(Hedge):
+    def __init__(self, timesteps, instrument_dim, lstm_cells, lstm_units):
+        super().__init__(False, False)
+
+        self.rnn = []
+        for _ in range(lstm_cells):
+            cell = tf.keras.layers.LSTM(lstm_units, return_sequences=True)
+            self.rnn.append(cell)
+
+        self._strategy_layers = []
+        for _ in range(timesteps):
+            layer = tf.keras.layers.Dense(instrument_dim)
+            self._strategy_layers.append(layer)
+
+
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
+
+
+    def call(self, inputs, training=False):
+        """Reimplementation of call."""
+        features, martingales, payoff = inputs
+        costs = tf.zeros_like(payoff, FLOAT_DTYPE)
+        value = tf.zeros_like(payoff, FLOAT_DTYPE)
+        hedge = 0.
+
+        sequence = tf.stack(features, 1)
+        for network in self.rnn:
+            sequence = network(sequence)
+
+        for step, strategy in enumerate(self.strategy_layers):
+            old_hedge = hedge
+            hedge = strategy(sequence[:, step, :])
+            increment = martingales[..., step + 1] - martingales[..., step]
+
+            value += tf.reduce_sum(tf.multiply(hedge, increment), 1)
+            costs += self.costs(step, hedge, old_hedge, martingales)
+
+        return value, costs
+
 
 # =============================================================================
 # === risk measures

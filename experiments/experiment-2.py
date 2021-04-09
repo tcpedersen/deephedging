@@ -8,24 +8,28 @@ import preprocessing
 import approximators
 
 # ==============================================================================
-folder_name = r"figures\discrete-multivariate\no-cost"
+folder_name = r"figures\discrete-multivariate\no-cost-frequent"
 activation = tf.keras.activations.softplus
 
 # ==============================================================================
 # === hyperparameters
 train_size, test_size, timesteps = int(2**18), int(2**18), 12
-hedge_multiplier = 1
+hedge_multiplier = 5
 alpha = 0.95
-num_layers, num_units = 2, 15
+
+shallow_layers = 2
+shallow_units = 15
+deep_layers = 4
+deep_units = 5
 
 # ==============================================================================
 # === setup
-#init_instruments, init_numeraire, book = books.simple_dga_putcall_book(
-#    timesteps / 12, 100, 100**(timesteps / 12), 0.02, 0.05, 0.4, 1)
-init_instruments, init_numeraire, book = books.random_dga_putcall_book(     
+# init_instruments, init_numeraire, book = books.simple_dga_putcall_book(
+#     timesteps / 12, 100, 100**(timesteps / 12), 0.02, 0.05, 0.4, 1)
+init_instruments, init_numeraire, book = books.random_dga_putcall_book(
     timesteps / 12, 25, 10, 10, 69)
 
-driver = utils.Driver(
+driver = utils.HedgeDriver(
     timesteps=timesteps * hedge_multiplier,
     frequency=0, # no need for frequency
     init_instruments=init_instruments,
@@ -42,8 +46,8 @@ driver.add_testcase(
         timesteps=timesteps * hedge_multiplier,
         instrument_dim=book.instrument_dim,
         internal_dim=0,
-        num_layers=num_layers,
-        num_units=num_units,
+        num_layers=shallow_layers,
+        num_units=shallow_units,
         activation=activation),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=preprocessing.MeanVarianceNormaliser(),
@@ -56,8 +60,8 @@ driver.add_testcase(
         timesteps=timesteps * hedge_multiplier,
         instrument_dim=book.instrument_dim,
         internal_dim=0,
-        num_layers=num_layers * 2,
-        num_units=num_units,
+        num_layers=deep_layers,
+        num_units=deep_units,
         activation=activation),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=preprocessing.MeanVarianceNormaliser(),
@@ -70,8 +74,8 @@ driver.add_testcase(
         timesteps=timesteps * hedge_multiplier,
         instrument_dim=book.instrument_dim,
         internal_dim=book.instrument_dim,
-        num_layers=num_layers,
-        num_units=num_units,
+        num_layers=shallow_layers,
+        num_units=shallow_units,
         activation=activation),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=preprocessing.MeanVarianceNormaliser(),
@@ -84,14 +88,26 @@ driver.add_testcase(
         timesteps=timesteps * hedge_multiplier,
         instrument_dim=book.instrument_dim,
         internal_dim=book.instrument_dim,
-        num_layers=num_layers * 2,
-        num_units=num_units,
+        num_layers=deep_layers,
+        num_units=deep_units,
         activation=activation),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=preprocessing.MeanVarianceNormaliser(),
     feature_type="log_martingale",
     price_type="indifference")
 
+driver.add_testcase(
+    "lstm",
+    hedge_models.LSTMHedge(
+        timesteps=timesteps * hedge_multiplier,
+        instrument_dim=book.instrument_dim,
+        lstm_cells=2,
+        lstm_units=15),
+    risk_measure=hedge_models.ExpectedShortfall(alpha),
+    normaliser=preprocessing.MeanVarianceNormaliser(),
+    feature_type="log_martingale_with_time",
+    price_type="indifference"
+    )
 
 driver.add_testcase(
     name="identity feature map",

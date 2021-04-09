@@ -150,6 +150,16 @@ class Barrier(Derivative, abc.ABC):
         self.rate = float(rate)
         self.volatility = float(volatility)
 
+        if outin == "out":
+            outin = 1
+        elif outin == "in":
+            outin = -1
+
+        if updown == "up":
+            updown = 1
+        elif updown == "down":
+            updown = -1
+
         if outin not in [-1, 1]:
             raise ValueError(f"outin must be -1 or 1, not {outin}.")
         if updown not in [-1, 1]:
@@ -300,7 +310,10 @@ class BarrierCall(Barrier):
             if self.updown == 1 and self.barrier < self.strike:
                 raise ValueError("derivative is worthless.")
             elif self.updown == -1 and self.barrier > self.strike:
-                raise ValueError("derivative is worthless.")
+                raise ValueError("payoff is linear.")
+        else:
+            if self.updown == 1 and self.strike > self.barrier:
+                raise ValueError("derivative is a call option.")
 
         self.barrier_call = PutCall(
             maturity, self.barrier, self.rate, self.volatility, 1)
@@ -361,7 +374,7 @@ class DiscreteGeometricPutCall(Derivative):
         self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
         self.theta = tf.convert_to_tensor(theta, FLOAT_DTYPE)
 
-        self.putcall = option = PutCall(
+        self.putcall = PutCall(
             maturity=self.maturity,
             strike=self.strike,
             rate=self.rate,
@@ -385,7 +398,7 @@ class DiscreteGeometricPutCall(Derivative):
 
     def _variance(self, time):
         dt = self._increments(time, 0)
-        sqdiff = tf.square(self.maturity - time[:-1]) # TODO 1:
+        sqdiff = tf.square(self.maturity - time[:-1])
         unpadded = self.volatility**2 * tf.cumsum(sqdiff * dt, reverse=True)
 
         return tf.pad(unpadded, [[0, 1]])
