@@ -52,6 +52,11 @@ class DenseApproximator(Approximator):
         self.output_layer = Dense(units=output_dim + internal_dim)
 
 
+    def _evaluate_layer(self, x, dense, batch, training):
+        x = dense(x, training=training)
+        x = batch(x, training=training)
+        return self.activation(x)
+
     def _call(self, inputs, training=False):
         """Implementation of call for Strategy.
         Args:
@@ -61,12 +66,42 @@ class DenseApproximator(Approximator):
             output: see Strategy._call
         """
         for dense, batch in zip(self.dense_layers, self.batch_layers):
-            inputs = dense(inputs, training=training)
-            inputs = batch(inputs, training=training)
-            inputs = self.activation(inputs)
+            inputs = self._evaluate_layer(inputs, dense, batch, training)
         output = self.output_layer(inputs, training=training)
 
         return output
+
+
+    def initialise(self, inputs, sample_size):
+        batch_size = tf.shape(inputs)[0]
+
+        iterator = zip(self.dense_layers, self.batch_layers)
+        for k, (dense, batch) in enumerate(iterator):
+            sample_idx = tf.random.shuffle(tf.range(batch_size))[:sample_size]
+            sample = tf.gather(inputs, sample_idx, axis=0)
+
+            for i in tf.range(k + 1):
+                sample = self._evaluate_layer(
+                    sample,
+                    self.dense_layers[i],
+                    self.batch_layers[i],
+                    False)
+            mean, variance = tf.nn.moments(sample, 0)
+
+            # dense.set_weights([dense.get_weights()[0] / tf.sqrt(variance)])
+            batch.set_weights([
+                batch.get_weights()[0] / tf.sqrt(variance),
+                (batch.get_weights()[1] - mean) / tf.sqrt(variance),
+                batch.get_weights()[2],
+                batch.get_weights()[3]])
+
+        sample_idx = tf.random.shuffle(tf.range(batch_size))[:sample_size]
+        sample = tf.gather(inputs, sample_idx, axis=0)
+        sample = self._call(sample, False)
+        mean, variance = tf.nn.moments(sample, 0)
+        self.output_layer.set_weights(
+            [self.output_layer.get_weights()[0] / tf.sqrt(variance),
+             self.output_layer.get_weights()[1]])
 
 
 class FeatureApproximator(Approximator):

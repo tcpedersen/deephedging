@@ -181,6 +181,27 @@ class NeuralHedge(SemiRecurrentHedge):
     def strategy_layers(self) -> list:
         return self._strategy_layers
 
+
+    def initialise(self, features, sample_size):
+        """Initialise weigths depending on the features.
+        Args:
+            see BaseHedge.strategy
+        """
+        batch_size = tf.shape(features[0])[0]
+
+        for step, strategy in enumerate(self.strategy_layers):
+            sample_idx = tf.random.shuffle(tf.range(batch_size))[:sample_size]
+            sample = [tf.gather(features[k], sample_idx, axis=0) \
+                      for k in tf.range(step + 1)]
+
+            hedge = 0.
+            internal = 0.
+            for k in tf.range(step + 1):
+                observation = self.observation(k, sample, hedge, internal)
+                hedge, internal = self.strategy_layers[k](observation, training=False)
+
+            strategy.initialise(observation, sample_size)
+
 # ==============================================================================
 # === fully recurrent hedge strategies
 class RecurrentHedge(BaseHedge):

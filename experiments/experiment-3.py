@@ -8,7 +8,7 @@ import preprocessing
 import approximators
 
 # ==============================================================================
-folder_name = r"figures\continuous-multivariate\no-cost"
+folder_name = r"figures\continuous-multivariate\cost"
 activation = tf.keras.activations.softplus
 
 # ==============================================================================
@@ -16,7 +16,6 @@ activation = tf.keras.activations.softplus
 train_size, test_size, timesteps = int(2**18), int(2**18), 14
 hedge_multiplier = 2**0
 frequency = 4 - 0
-lookback = 2 if frequency > 2 else 1
 alpha = 0.95
 
 shallow_layers, shallow_units = 2, 15
@@ -36,8 +35,8 @@ driver = utils.HedgeDriver(
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
-    cost=None,
-    risk_neutral=True,
+    cost=1/100,
+    risk_neutral=False,
     learning_rate=1e-1
     )
 

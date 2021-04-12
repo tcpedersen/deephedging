@@ -8,12 +8,12 @@ import preprocessing
 import books
 
 # ==============================================================================
-folder_name = r"figures\bin"
+folder_name = r"figures\markovian-multivariate\no-cost"
 
 # ==============================================================================
 # === hyperparameters
 train_size, test_size, timesteps = int(2**18), int(2**18), 14
-hedge_multiplier = 1
+hedge_multiplier = 5
 alpha = 0.95
 
 shallow_layers = 2
@@ -37,58 +37,72 @@ driver = utils.HedgeDriver(
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
-    cost=1/100,
-    risk_neutral=False,
+    cost=None,
+    risk_neutral=True,
     learning_rate=1e-1
     )
 
-driver.add_testcase(
-    "shallow network",
-    hedge_models.NeuralHedge(
-        timesteps=timesteps * hedge_multiplier,
-        instrument_dim=book.instrument_dim,
-        internal_dim=0,
-        num_layers=shallow_layers,
-        num_units=shallow_units,
-        activation=activation),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=preprocessing.MeanVarianceNormaliser(),
-    feature_type="log_martingale",
-    price_type="indifference")
+# driver.add_testcase(
+#     "shallow network",
+#     hedge_models.NeuralHedge(
+#         timesteps=timesteps * hedge_multiplier,
+#         instrument_dim=book.instrument_dim,
+#         internal_dim=0,
+#         num_layers=shallow_layers,
+#         num_units=shallow_units,
+#         activation=activation),
+#     risk_measure=hedge_models.ExpectedShortfall(alpha),
+#     normaliser=preprocessing.MeanVarianceNormaliser(),
+#     feature_type="log_martingale",
+#     price_type="indifference")
+
+# driver.add_testcase(
+#     "deep network",
+#     hedge_models.NeuralHedge(
+#         timesteps=timesteps * hedge_multiplier,
+#         instrument_dim=book.instrument_dim,
+#         internal_dim=0,
+#         num_layers=deep_layers,
+#         num_units=deep_units,
+#         activation=activation),
+#     risk_measure=hedge_models.ExpectedShortfall(alpha),
+#     normaliser=preprocessing.MeanVarianceNormaliser(),
+#     feature_type="log_martingale",
+#     price_type="indifference")
 
 driver.add_testcase(
-    "deep network",
+    "wide and deep network",
     hedge_models.NeuralHedge(
         timesteps=timesteps * hedge_multiplier,
         instrument_dim=book.instrument_dim,
         internal_dim=0,
         num_layers=deep_layers,
-        num_units=deep_units,
+        num_units=shallow_units,
         activation=activation),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=preprocessing.MeanVarianceNormaliser(),
-    feature_type="log_martingale",
+    feature_function="log_martingale",
     price_type="indifference")
 
-driver.add_testcase(
-    "identity feature map",
-    hedge_models.LinearFeatureHedge(
-        timesteps=timesteps * hedge_multiplier,
-        instrument_dim=book.instrument_dim,
-        mappings=[approximators.IdentityFeatureMap] \
-            * (1 + (driver.cost is not None))),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=None,
-    feature_type="delta",
-    price_type="indifference")
+# driver.add_testcase(
+#     "identity feature map",
+#     hedge_models.LinearFeatureHedge(
+#         timesteps=timesteps * hedge_multiplier,
+#         instrument_dim=book.instrument_dim,
+#         mappings=[approximators.IdentityFeatureMap] \
+#             * (1 + (driver.cost is not None))),
+#     risk_measure=hedge_models.ExpectedShortfall(alpha),
+#     normaliser=None,
+#     feature_type="delta",
+#     price_type="indifference")
 
-driver.add_testcase(
-    "continuous-time",
-    hedge_models.FeatureHedge(),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=None,
-    feature_type="delta",
-    price_type="arbitrage")
+# driver.add_testcase(
+#     "continuous-time",
+#     hedge_models.FeatureHedge(),
+#     risk_measure=hedge_models.ExpectedShortfall(alpha),
+#     normaliser=None,
+#     feature_type="delta",
+#     price_type="arbitrage")
 
 if driver.cost is not None or not driver.risk_neutral:
     driver.add_liability_free(
@@ -103,8 +117,8 @@ if driver.cost is not None or not driver.risk_neutral:
 
 driver.train(train_size, 1000, int(2**10))
 driver.test(test_size)
-driver.test_summary(fr"{folder_name}\test-summary.txt")
-driver.plot_distributions(fr"{folder_name}\hist", "upper right")
+driver.test_summary(fr"{folder_name}\test-summary-extra.txt")
+# driver.plot_distributions(fr"{folder_name}\hist", "upper right")
 
 if book.book_size == 1:
     utils.plot_markovian_payoff(

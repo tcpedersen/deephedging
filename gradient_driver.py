@@ -136,10 +136,15 @@ class GradientDriver(object):
             batch_size,
             epochs,
             callbacks=callbacks,
-            verbose=2)
+            verbose=0) # TODO set to 2
         end = perf_counter() - start
 
         case["train_time"] = end
+        case["trainable_variables"] = tf.reduce_sum(
+            [tf.size(w) for w in case["model"].trainable_variables])
+        case["non_trainable_variables"] = tf.reduce_sum(
+            [tf.size(w) for w in case["model"].non_trainable_variables])
+
         case["trained"] = True
 
         return
@@ -180,6 +185,33 @@ class GradientDriver(object):
 
         return
 
+
+    def test_summary(self, file_name=None):
+        columns = [
+            {"title": "training time", "key": "train_time"},
+            {"title": "trainable vars", "key": "trainable_variables"},
+            {"title": "non-trainable vars", "key": "non_trainable_variables"}
+            ]
+
+        case_size = max([len(case["name"]) for case in self.testcases]) + 1
+        block_size = max([len(col["title"]) for col in columns]) + 3
+
+        header = "".rjust(case_size) + "".join(
+            [col["title"].rjust(block_size) for col in columns])
+        body = ""
+        for case in self.testcases:
+            body += case["name"].ljust(case_size)
+            for val in [case[col["key"]] for col in columns]:
+                body += f"{val:.6f}".rjust(block_size)
+            body += "\n"
+
+        summary = header + "\n" + body
+
+        if file_name is not None:
+            with open(file_name, "w") as file:
+                file.write(summary)
+
+        print(summary)
 
     def boxplot(self, sample_size):
         skip = self.test_skip()

@@ -264,7 +264,8 @@ class HedgeDriver(object):
 
 
     def get_input(self, case, raw_data):
-        features = case["feature_function"](raw_data)
+        raw_features = case["feature_function"](raw_data)
+        features = self.normalise_features(case, raw_features)
         martingales = raw_data["instruments"] / raw_data["numeraire"]
 
         if len(features) != self.timesteps:
@@ -357,10 +358,22 @@ class HedgeDriver(object):
 
     def test_case(self, case, input_data):
         value, costs, wealth, risk = self.get_risk(case, input_data)
-        case["test_value"] = precise_mean(value)
-        case["test_costs"] = precise_mean(costs)
-        case["test_wealth"] = precise_mean(wealth)
+
+        names = ["value", "costs", "wealth"]
+        tensors = [value, costs, wealth]
+        for name, tensor in zip(names, tensors):
+            case[f"test_mean_{name}"] = precise_mean(tensor)
+            case[f"test_mean_abs_{name}"] = precise_mean(tf.abs(tensor))
+            case[f"test_variance_{name}"] = cast_apply(
+                tf.math.reduce_variance, tensor)
+
         case["test_risk"] = risk
+        case["price"] = self.get_price(case)
+
+        case["test_wealth_with_price_abs_mean"] = precise_mean(
+            tf.abs(wealth + case["price"]))
+        case["test_wealth_with_price_variance"] = cast_apply(
+            tf.math.reduce_variance, wealth + case["price"])
 
         case["tested"] = True
 
@@ -377,14 +390,12 @@ class HedgeDriver(object):
         for case in self.testcases:
             input_data = self.get_input(case, raw_data)
             self.test_case(case, input_data)
-            case["price"] = self.get_price(case)
 
-        self.test_mean_payoff = tf.reduce_mean(raw_data["payoff"], 0)
+        self.test_mean_payoff = precise_mean(raw_data["payoff"])
 
 
     def get_price(self, case):
         self.assert_case_is_trained(case)
-        self.assert_case_is_tested(case)
 
         if case["price_type"] == "arbitrage":
             raw_data = self.sample(1)
@@ -410,30 +421,39 @@ class HedgeDriver(object):
     def test_summary(self, file_name=None):
         self.assert_all_tested()
 
-        case_size = max([len(case["name"]) for case in self.testcases]) + 1
+        columns = [
+            {"title": "mean costs", "key": "test_mean_costs"},
+            {"title": "variance costs", "key": "test_variance_costs"},
 
-        header_titles = ["value", "costs", "wealth",
-                         "risk (train)", "risk (test)",
-                         "price", "training time",
-                         "trainable variables", "non-trainable variables"]
-        block_size = max([len(title) for title in header_titles]) + 3
+            {"title": "mean wealth", "key": "test_mean_wealth"},
+            {"title": "variance wealth", "key": "test_variance_wealth"},
+
+            {"title": "mean abs wealth w. price", "key": "test_wealth_with_price_abs_mean"},
+            {"title": "variance wealth w. price", "key": "test_wealth_with_price_variance"},
+
+            {"title": "risk (train)", "key": "train_risk"},
+            {"title": "risk (test)", "key": "test_risk"},
+            {"title": "price", "key": "price"},
+            {"title": "training time", "key": "train_time"},
+            {"title": "trainable vars", "key": "trainable_variables"},
+            {"title": "non-trainable vars", "key": "non_trainable_variables"}
+            ]
+
+        case_size = max([len(case["name"]) for case in self.testcases]) + 1
+        block_size = max([len(col["title"]) for col in columns]) + 3
 
         header = "".rjust(case_size) + "".join(
-            [ht.rjust(block_size) for ht in header_titles])
+            [col["title"].rjust(block_size) for col in columns])
         body = ""
-        print_keys = ["test_value", "test_costs", "test_wealth",
-                      "train_risk", "test_risk", "price", "train_time",
-                      "trainable_variables", "non_trainable_variables"]
-
         extra = [self.liability_free] if self.liability_free is not None else []
         for case in self.testcases + extra:
             body += case["name"].ljust(case_size)
-            for val in [case[key] for key in print_keys]:
-                body += f"{val:.4f}".rjust(block_size)
+            for val in [case[col["key"]] for col in columns]:
+                body += f"{val:.6f}".rjust(block_size)
             body += "\n"
 
         summary = header + "\n" + body
-        summary += "\n\n" + f"payoff: {self.test_mean_payoff: .4f}"
+        summary += "\n\n" + f"payoff: {self.test_mean_payoff: .6f}"
 
         if file_name is not None:
             with open(file_name, "w") as file:

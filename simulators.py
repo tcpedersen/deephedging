@@ -37,9 +37,6 @@ class Simulator(abc.ABC):
         Returns:
             rvs: (batch_size, timesteps, dimension)
         """
-        if not use_sobol and skip > 0:
-            raise ValueError("skip must be 0 when use_sobol is false.")
-
         if use_sobol:
             chol = tf.linalg.cholesky(self.correlation)
             sobol = tf.math.sobol_sample(
