@@ -94,10 +94,17 @@ class FeatureHedge(BaseHedge):
 # ==============================================================================
 # === semi-recurrent hedge strategies
 class SemiRecurrentHedge(BaseHedge):
-    def __init__(self, append_internal, append_hedge):
+    def __init__(self, append_internal, append_hedge, observation_normalise):
         super().__init__()
         self.append_internal = bool(append_internal)
         self.append_hedge = bool(append_hedge)
+        self.observation_normalise = bool(observation_normalise)
+
+        if self.observation_normalise:
+            self.batch_layers = []
+            for _ in tf.range(len(self.strategy_layers)):
+                batch = tf.keras.layers.BatchNormalization()
+                self.batch_layers.append(batch)
 
 
     @property
@@ -131,6 +138,11 @@ class SemiRecurrentHedge(BaseHedge):
 
         for step, strategy in enumerate(self.strategy_layers):
             observation = self.observation(step, features, hedge, internal)
+
+            if self.observation_normalise:
+                observation = self.batch_layers[step](
+                    observation, training=training)
+
             hedge, internal = strategy(observation, training=training)
             strategies.append(hedge)
 
@@ -140,7 +152,8 @@ class SemiRecurrentHedge(BaseHedge):
 class LinearFeatureHedge(SemiRecurrentHedge):
     def __init__(self, timesteps, instrument_dim, mappings):
         super().__init__(append_internal=False,
-                         append_hedge=(len(mappings) > 1))
+                         append_hedge=(len(mappings) > 1),
+                         observation_normalise=False)
 
         self._strategy_layers = []
         for step in range(timesteps):
@@ -162,8 +175,12 @@ class NeuralHedge(SemiRecurrentHedge):
                  internal_dim,
                  num_layers,
                  num_units,
-                 activation):
-        super().__init__(append_internal=(internal_dim > 0), append_hedge=True)
+                 activation,
+                 observation_normalise=False):
+        super().__init__(
+            append_internal=(internal_dim > 0),
+            append_hedge=True,
+            observation_normalise=observation_normalise)
 
         self._strategy_layers = []
 
@@ -187,6 +204,7 @@ class NeuralHedge(SemiRecurrentHedge):
         Args:
             see BaseHedge.strategy
         """
+        self.strategy(features, training=True) # initialise batch normalisation
         batch_size = tf.shape(features[0])[0]
 
         for step, strategy in enumerate(self.strategy_layers):
@@ -200,7 +218,8 @@ class NeuralHedge(SemiRecurrentHedge):
                 observation = self.observation(k, sample, hedge, internal)
                 hedge, internal = self.strategy_layers[k](observation, training=False)
 
-            strategy.initialise(observation, sample_size)
+            if step > 0:
+                strategy.initialise(observation, sample_size)
 
 # ==============================================================================
 # === fully recurrent hedge strategies

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
+import sys
 
 import hedge_models
 import books
@@ -8,26 +9,37 @@ import preprocessing
 import approximators
 
 # ==============================================================================
-folder_name = r"figures\continuous-multivariate\cost"
+# === hyperparameters
+train_size, test_size, timesteps = int(2**18), int(2**18), 14
+hedge_exponent = 0 if str(sys.argv[3]) == "normal" else 2
+hedge_multiplier = 2**hedge_exponent
+frequency = 4 - hedge_exponent
+alpha = 0.95
+
+if str(sys.argv[1]) == "univariate":
+    units = 3
+elif str(sys.argv[1]) == "multivariate":
+    units = 10
+else:
+    raise ValueError
+
+shallow_layers = 2
+shallow_units = units
+deep_layers = 4
+deep_units = units
+
 activation = tf.keras.activations.softplus
 
 # ==============================================================================
-# === hyperparameters
-train_size, test_size, timesteps = int(2**18), int(2**18), 14
-hedge_multiplier = 2**0
-frequency = 4 - 0
-alpha = 0.95
-
-shallow_layers, shallow_units = 2, 15
-deep_layers, deep_units = 4, 5
-
-# ==============================================================================
 # === setup
-init_instruments, init_numeraire, book = books.random_barrier_book(
-    timesteps / 250, 25, 10, 10, 69)
-
-# init_instruments, init_numeraire, book = books.simple_barrier_book(
-#     timesteps / 250, 100, 105, 95, 0.02, 0.05, 0.2, "out", "down")
+if str(sys.argv[1]) == "univariate":
+    init_instruments, init_numeraire, book = books.simple_barrier_book(
+        timesteps / 250, 100, 105, 95, 0.02, 0.05, 0.2, "out", "down")
+elif str(sys.argv[1]) == "multivariate":
+    init_instruments, init_numeraire, book = books.random_barrier_book(
+        timesteps / 250, 25, 10, 10, 69)
+else:
+    raise ValueError
 
 driver = utils.HedgeDriver(
     timesteps=timesteps * hedge_multiplier,
@@ -35,11 +47,24 @@ driver = utils.HedgeDriver(
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=book,
-    cost=1/100,
-    risk_neutral=False,
+    cost=1/100 if str(sys.argv[2]) == "cost" else None,
+    risk_neutral=False if str(sys.argv[2]) == "cost" else True,
     learning_rate=1e-1
     )
 
+# === set folder name
+outer_folder = f"continuous-{'multivariate' if book.instrument_dim > 1 else 'univariate'}"
+if driver.cost is not None:
+    inner_folder = "cost"
+elif hedge_multiplier > 1:
+    inner_folder = "no-cost-frequent"
+else:
+    inner_folder = "no-cost"
+
+folder_name = fr"figures\{outer_folder}\{inner_folder}"
+
+# =============================================================================
+# === train
 driver.add_testcase(
     "shallow network",
     hedge_models.NeuralHedge(
@@ -75,7 +100,7 @@ driver.add_testcase(
         instrument_dim=book.instrument_dim,
         internal_dim=book.instrument_dim,
         num_layers=shallow_layers,
-        num_units=shallow_units,
+        num_units=shallow_units * 2,
         activation=activation),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=preprocessing.MeanVarianceNormaliser(),
@@ -89,63 +114,46 @@ driver.add_testcase(
         instrument_dim=book.instrument_dim,
         internal_dim=book.instrument_dim,
         num_layers=deep_layers,
-        num_units=deep_units,
+        num_units=deep_units * 2,
         activation=activation),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=preprocessing.MeanVarianceNormaliser(),
     feature_function="log_martingale",
     price_type="indifference")
 
-
-driver.add_testcase(
-    "lstm",
-    hedge_models.RecurrentHedge(
-        timesteps=timesteps * hedge_multiplier,
-        rnn=tf.keras.layers.LSTM,
-        instrument_dim=book.instrument_dim,
-        cells=2,
-        units=15),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=preprocessing.MeanVarianceNormaliser(),
-    feature_function="log_martingale_with_time",
-    price_type="indifference"
-    )
-
-
-driver.add_testcase(
-    "gru",
-    hedge_models.RecurrentHedge(
-        timesteps=timesteps * hedge_multiplier,
-        rnn=tf.keras.layers.GRU,
-        instrument_dim=book.instrument_dim,
-        cells=2,
-        units=15),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=preprocessing.MeanVarianceNormaliser(),
-    feature_function="log_martingale_with_time",
-    price_type="indifference"
-    )
-
-
-driver.add_testcase(
-    name="identity feature map",
-    model=hedge_models.LinearFeatureHedge(
-        timesteps * hedge_multiplier,
-        book.instrument_dim,
-        [approximators.IdentityFeatureMap] * (1 + int(driver.cost is not None))
-    ),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=None,
-    feature_function="delta",
-    price_type="indifference")
-
-driver.add_testcase(
-    name="continuous-time",
-    model=hedge_models.FeatureHedge(),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=None,
-    feature_function="delta",
-    price_type="arbitrage")
+# driver.add_testcase(
+#     "lstm",
+#     hedge_models.RecurrentHedge(
+#         timesteps=timesteps * hedge_multiplier,
+#         rnn=tf.keras.layers.LSTM,
+#         instrument_dim=book.instrument_dim,
+#         cells=2,
+#         units=15),
+#     risk_measure=hedge_models.ExpectedShortfall(alpha),
+#     normaliser=preprocessing.MeanVarianceNormaliser(),
+#     feature_function="log_martingale_with_time",
+#     price_type="indifference"
+#     )
+# 
+# driver.add_testcase(
+#     name="identity feature map",
+#     model=hedge_models.LinearFeatureHedge(
+#         timesteps * hedge_multiplier,
+#         book.instrument_dim,
+#         [approximators.IdentityFeatureMap] * (1 + int(driver.cost is not None))
+#     ),
+#     risk_measure=hedge_models.ExpectedShortfall(alpha),
+#     normaliser=None,
+#     feature_function="delta",
+#     price_type="indifference")
+# 
+# driver.add_testcase(
+#     name="continuous-time",
+#     model=hedge_models.FeatureHedge(),
+#     risk_measure=hedge_models.ExpectedShortfall(alpha),
+#     normaliser=None,
+#     feature_function="delta",
+#     price_type="arbitrage")
 
 if driver.cost is not None or not driver.risk_neutral:
     driver.add_liability_free(
@@ -158,15 +166,15 @@ if driver.cost is not None or not driver.risk_neutral:
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_function="log_martingale")
 
-driver.train(train_size, 1000, int(2**10))
+driver.train(train_size, 2, int(2**10))
 driver.test(test_size)
-driver.test_summary(fr"{folder_name}\test-summary.txt")
+driver.test_summary(fr"{folder_name}\test-summary-extra.txt")
 
-if not book.instrument_dim > 1:
-    driver.plot_distributions(fr"{folder_name}\hist", "upper right")
+# if not book.instrument_dim > 1:
+#     driver.plot_distributions(fr"{folder_name}\hist", "upper right")
 
-    utils.plot_univariate_barrier_payoff(
-        driver,
-        test_size,
-        driver.testcases[-1]["price"],
-        file_name=fr"{folder_name}\payoff")
+#     utils.plot_univariate_barrier_payoff(
+#         driver,
+#         test_size,
+#         driver.testcases[-1]["price"],
+#         file_name=fr"{folder_name}\payoff")
