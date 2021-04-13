@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 from time import perf_counter
 
 import utils
+import preprocessing
 from constants import FLOAT_DTYPE
+import gradient_models
 
 class GradientDriver(object):
     def __init__(self,
@@ -15,8 +17,7 @@ class GradientDriver(object):
                  init_numeraire,
                  book,
                  learning_rate_min=1e-4,
-                 learning_rate_max=1e-2,
-                 weight=None):
+                 learning_rate_max=1e-2):
         self.timesteps = timesteps
         self.frequency = frequency
         self.init_instruments = init_instruments
@@ -25,14 +26,23 @@ class GradientDriver(object):
 
         self.learning_rate_min = learning_rate_min
         self.learning_rate_max = learning_rate_max
-        self.weight = weight
 
         self.exploring_loc = None
         self.exploring_scale = None
 
         self.testcases = []
 
-    def add_testcase(self, name, model, normaliser):
+    def add_testcase(self, name, model):
+        if isinstance(model, gradient_models.SequenceDeltaNetwork):
+            normaliser = preprocessing.IOMeanVarianceNormaliser()
+
+        elif isinstance(model, gradient_models.SequenceTwinNetwork) \
+            or isinstance(model, gradient_models.SequenceValueNetwork):
+            normaliser = preprocessing.DifferentialMeanVarianceNormaliser()
+
+        else:
+            raise TypeError("invalid model.")
+
         self.testcases.append({
             "name": name,
             "model": model,
@@ -86,33 +96,52 @@ class GradientDriver(object):
         return raw_data
 
 
-    def get_train_input(self, case, raw_data):
+    def transform(self, case, raw_data):
         keys = ["instruments", "payoff", "adjoint"]
         x, y, dydx = [raw_data[key] for key in keys]
 
-        if case["normaliser"] is None:
-            return x, y, dydx
+        attr = "fit_transform" if not case["trained"] else "transform"
 
-        if not case["trained"]:
-            return case["normaliser"].fit_transform(x, y, dydx)
+        if isinstance(case["model"], gradient_models.SequenceValueNetwork):
+            norm_x, norm_y, norm_dydx = getattr(case["normaliser"], attr)(
+                x, y, dydx)
 
-        return case["normaliser"].transform(x, y, dydx)
+            return norm_x, norm_y
+
+        elif isinstance(case["model"], gradient_models.SequenceTwinNetwork):
+            norm_x, norm_y, norm_dydx = getattr(case["normaliser"], attr)(
+                x, y, dydx)
+
+            return norm_x, [norm_y, norm_dydx]
+
+        elif isinstance(case["model"], gradient_models.SequenceDeltaNetwork):
+            norm_x, norm_dydx = getattr(case["normaliser"], attr)(x, dydx)
+
+            return norm_x, norm_dydx
 
 
-    def evaluate_case(self, case, instruments):
+    def inverse_transform(self, case, norm_dydx):
+        if isinstance(case["model"], gradient_models.SequenceValueNetwork) \
+            or isinstance(case["model"], gradient_models.SequenceTwinNetwork):
+            return case["normaliser"].inverse_transform_dydx(norm_dydx)
+
+        elif isinstance(case["model"], gradient_models.SequenceDeltaNetwork):
+            return case["normaliser"].inverse_transform_y(norm_dydx)
+
+
+    def evaluate_case(self, case, raw_data):
         if not case["trained"]:
             raise ValueError("case must be trained before evaluation.")
 
-        norm_x = case["normaliser"].transform_x(instruments)
-        norm_y, norm_dydx = case["model"](norm_x)
-        y = case["normaliser"].inverse_transform_y(norm_y)
-        dydx = case["normaliser"].inverse_transform_dydx(norm_dydx)
+        inputs, output = self.transform(case, raw_data)
+        norm_dydx = case["model"].gradient(inputs)
+        dydx = self.inverse_transform(case, norm_dydx)
 
-        return y, dydx
+        return dydx
 
 
     def train_case(self, case, batch_size, epochs, raw_data):
-        x, y, dydx = self.get_train_input(case, raw_data)
+        inputs, output = self.transform(case, raw_data)
 
         lr_schedule = utils.PeakSchedule(
             self.learning_rate_min, self.learning_rate_max, epochs)
@@ -120,23 +149,28 @@ class GradientDriver(object):
             tf.keras.callbacks.LearningRateScheduler(lr_schedule),
             tf.keras.callbacks.EarlyStopping("loss", patience=10)]
 
-        if self.weight is None:
-            z = tf.math.reduce_std(y) / tf.math.reduce_std(dydx)
-            self.weight = 1 / (1 + z)
+        if isinstance(case["model"], gradient_models.SequenceTwinNetwork):
+            # TODO generalise to multiple dimensions
+            # z = tf.math.reduce_std(y) / tf.math.reduce_std(dydx)
+            # weight = 1 / (1 + z)
+            weight = 0.5
+            loss_weights = [weight, 1 - weight]
+        else:
+            loss_weights = [1.]
 
         case["model"].compile(optimizer=tf.keras.optimizers.Adam(),
                               loss="mean_squared_error",
-                              loss_weights=[self.weight, 1 - self.weight])
+                              loss_weights=loss_weights)
 
-        case["model"](x) # remove initial overhead time
+        case["model"](inputs) # remove initial overhead time
 
         start = perf_counter()
         case["history"] = case["model"].fit(
-            x, [y, dydx],
+            inputs, output,
             batch_size,
             epochs,
             callbacks=callbacks,
-            verbose=0) # TODO set to 2
+            verbose=2)
         end = perf_counter() - start
 
         case["train_time"] = end
@@ -148,6 +182,7 @@ class GradientDriver(object):
         case["trained"] = True
 
         return
+
 
     def train(self, sample_size, epochs, batch_size):
         raw_data = self.sample(sample_size, skip=0, exploring=True)
@@ -162,24 +197,55 @@ class GradientDriver(object):
     def test_skip(self):
         return max([case["train_batch_size"] for case in self.testcases])
 
-    def weighted_mape(actual, prediction):
-        a = tf.reduce_sum(tf.abs(actual - prediction), 0)
-        b = tf.reduce_sum(tf.abs(actual), 0)
+
+    def weighted_mape(self, actual, prediction):
+        a = utils.cast_apply(tf.reduce_sum, tf.abs(actual - prediction), axis=0)
+        b = utils.cast_apply(tf.reduce_sum, tf.abs(actual), axis=0)
 
         return a / b
+
+
+    def mean_absolute_log_error(self, actual, prediction):
+        error = utils.cast_apply(
+            tf.reduce_mean,
+            tf.math.log(actual / prediction),
+            axis=0)
+
+        return error
+
+
+    def mean_squared_error(self, actual, prediction):
+        error = utils.cast_apply(
+            tf.reduce_mean,
+            tf.square(actual - prediction),
+            axis=0)
+
+        return error
+
+
+    def mean_absolute_error(self, actual, prediction):
+        error = utils.cast_apply(
+            tf.reduce_mean,
+            tf.abs(actual - prediction),
+            axis=0)
+
+        return error
+
 
     def test(self, sample_size):
         skip = self.test_skip()
         raw_data = self.sample(sample_size, skip, exploring=True)
 
         for case in self.testcases:
-            x = raw_data["instruments"]
-            y, dydx = self.evaluate_case(case, x)
+            dydx = self.evaluate_case(case, raw_data)
 
-            case["test_value_mse"] = tf.reduce_mean(
-                tf.abs(y - raw_data["value"]), axis=0)
-            case["test_delta_mse"] = tf.reduce_mean(
-                tf.abs(dydx  - raw_data["delta"]), axis=0)
+            for attr in ["weighted_mape",
+                         "mean_absolute_log_error",
+                         "mean_squared_error",
+                         "mean_absolute_error"]:
+                error_measure = getattr(self, attr)
+                case[f"test_delta_{error_measure.__name__}"] = error_measure(
+                    raw_data["delta"], dydx)
 
             case["tested"] = True
 
@@ -212,6 +278,7 @@ class GradientDriver(object):
                 file.write(summary)
 
         print(summary)
+
 
     def boxplot(self, sample_size):
         skip = self.test_skip()
@@ -361,36 +428,36 @@ def markovian_visualiser(driver, sample_size):
         )
 
     for case in driver.testcases:
-        x = raw_data["instruments"]
-        y, dydx = driver.evaluate_case(case, x)
+        dydx = driver.evaluate_case(case, raw_data)
 
         instrument = raw_data["instruments"][:, 0, :]
 
         for step in tf.range(driver.timesteps + 1):
-            xaxis = instrument[..., step]
+            key = tf.argsort(instrument[..., step])
+            xaxis = tf.gather(instrument[..., step], key)
 
-            # value
-            plt.figure()
-            prediction = y[..., step]
-            target = raw_data["value"][..., step]
-            data = raw_data["payoff"]
+            # # value
+            # plt.figure()
+            # prediction = tf.gather(y[..., step], key).numpy()
+            # target = tf.gather(raw_data["value"][..., step], key).numpy()
+            # data = tf.gather(raw_data["payoff"], key).numpy()
 
-            plt.scatter(xaxis, data, color="grey", s=0.5, alpha=0.5)
-            plt.scatter(xaxis, target, color="red", s=0.5, alpha=0.5)
-            plt.scatter(xaxis, prediction, color="blue", s=0.5, alpha=0.5)
+            # plt.scatter(xaxis, data, color="grey", s=0.5, alpha=0.5)
+            # plt.plot(xaxis, target, "--", color="red")
+            # plt.plot(xaxis, prediction, color="black")
 
-            plt.title(f"value {step}")
-            plt.show()
+            # plt.title(f"value {step}")
+            # plt.show()
 
             # delta
             plt.figure()
-            prediction = dydx[..., 0, step]
-            target = raw_data["delta"][..., 0, step]
-            data = raw_data["adjoint"][..., 0, step]
+            prediction = tf.gather(dydx[..., 0, step], key).numpy()
+            target = tf.gather(raw_data["delta"][..., 0, step], key).numpy()
+            data = tf.gather(raw_data["adjoint"][..., 0, step], key).numpy()
 
             plt.scatter(xaxis, data, color="grey", s=0.5, alpha=0.5)
-            plt.scatter(xaxis, target, color="red", s=0.5, alpha=0.5)
-            plt.scatter(xaxis, prediction, color="blue", s=0.5, alpha=0.5)
+            plt.plot(xaxis, target, "--", color="red")
+            plt.plot(xaxis, prediction, color="black")
 
             plt.title(f"delta {step}")
             plt.show()

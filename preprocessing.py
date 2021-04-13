@@ -3,8 +3,6 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 import abc
 
-from constants import FLOAT_DTYPE
-
 class Normaliser(abc.ABC):
     @abc.abstractmethod
     def fit(self, x):
@@ -37,6 +35,7 @@ class Normaliser(abc.ABC):
     def fit_transform(self, x):
         self.fit(x)
         return self.transform(x)
+
 
 class MeanVarianceNormaliser(Normaliser):
     def fit(self, inputs):
@@ -83,53 +82,66 @@ class MeanVarianceNormaliser(Normaliser):
         return tf.cast(xc, y.dtype)
 
 
-class ZeroComponentAnalysis(Normaliser):
+class IOMeanVarianceNormaliser:
     def __init__(self):
-        self.eps = tf.constant(1e-4, tf.float64)
-
-    def fit(self, x):
-        xc = tf.cast(x, tf.float64)
-        self.mean = tf.reduce_mean(xc, 0)
-        cov = tfp.stats.covariance(xc, sample_axis=0, event_axis=1)
-
-        self.w = []
-        self.inv_w = []
-
-        for step in tf.range(tf.shape(xc)[-1]):
-            # u @ tf.linalg.diag(s) @ tf.transpose(v) = cov
-            s, u, v = tf.linalg.svd(cov[..., step],
-                                    full_matrices=True, compute_uv=True)
-            s = tf.where(tf.abs(s) < self.eps, 1, s)
-            self.w.append(u @ tf.linalg.diag(s**(-1 / 2)) @ tf.transpose(v))
-            self.inv_w.append(v @ tf.linalg.diag(s**(1 / 2)) @ tf.transpose(u))
-
-        self.w = tf.convert_to_tensor(self.w, tf.float64)
-        self.inv_w = tf.convert_to_tensor(self.inv_w, tf.float64)
+        self.xnormaliser = MeanVarianceNormaliser()
+        self.ynormaliser = MeanVarianceNormaliser()
 
 
-    def transform(self, x):
-        norm_xc = tf.cast(x, tf.float64) - self.mean
-        yc = []
-        for step in tf.range(tf.shape(norm_xc)[-1]):
-            yc.append(norm_xc[..., step] @ self.w[step, ...])
+    def fit(self, x, y):
+        """Assumes:
+            x: (batch, xdim, timesteps)
+            y: (batch, ydim, timesteps)
+        """
+        self.xnormaliser.fit(tf.unstack(x, axis=-1))
+        self.ynormaliser.fit(tf.unstack(y, axis=-1))
 
-        return tf.transpose(tf.convert_to_tensor(yc, x.dtype), [1, 2, 0])
+
+    def transform(self, x, y):
+        """
+        Args:
+            x: (batch, xdim, timesteps)
+            y: (batch, ydim, timesteps)
+        Returns:
+            norm_x: (batch, xdim, timesteps)
+            norm_y: (batch, ydim, timesteps)
+        """
+        norm_x = self.xnormaliser.transform(tf.unstack(x, axis=-1))
+        norm_y = self.ynormaliser.transform(tf.unstack(y, axis=-1))
+
+        return tf.stack(norm_x, axis=-1), tf.stack(norm_y, axis=-1)
 
 
-    def inverse_transform(self, y):
-        yc = tf.cast(y, tf.float64)
+    def inverse_transform_y(self, norm_y):
+        y = self.ynormaliser.inverse_transform(tf.unstack(norm_y, axis=-1))
 
-        norm_xc = []
-        for step in tf.range(tf.shape(yc)[-1]):
-            norm_xc.append(yc[..., step] @ self.inv_w[step, ...])
+        return tf.stack(y, axis=-1)
 
-        return tf.cast(tf.stack(norm_xc, -1) + self.mean, y.dtype)
+
+    def inverse_transform(self, norm_x, norm_y):
+        """
+        Returns:
+            x: (batch, xdim, timesteps)
+            y: (batch, ydim, timesteps)
+        Args:
+            norm_x: (batch, xdim, timesteps)
+            norm_y: (batch, ydim, timesteps)
+        """
+        x = self.xnormaliser.inverse_transform(tf.unstack(norm_x, axis=-1))
+        y = self.inverse_transform_y(norm_y)
+
+        return tf.stack(x, axis=-1), y
+
+
+    def fit_transform(self, x, y):
+        self.fit(x, y)
+        return self.transform(x, y)
 
 
 class DifferentialMeanVarianceNormaliser(object):
     def fit(self, x, y):
         """Assumes:
-            x: (batch, dimension, timesteps)
+            x: (batch, xdim, timesteps)
             y: (batch, )
         """
         # major numerical imprecision in reduce_mean for tf.float32,
@@ -157,9 +169,9 @@ class DifferentialMeanVarianceNormaliser(object):
 
     def transform(self, x, y, dydx):
         """Assumes:
-            x: (batch, dimension, timesteps)
+            x: (batch, xdim, timesteps)
             y: (batch, )
-            dydx: (batch, dimension, timesteps)
+            dydx: (batch, xdim, timesteps)
         """
         return self.transform_x(x), self.transform_y(y), \
             self.transform_dydx(dydx)
@@ -193,4 +205,3 @@ class DifferentialMeanVarianceNormaliser(object):
         self.fit(x, y)
 
         return self.transform(x, y, dydx)
-
