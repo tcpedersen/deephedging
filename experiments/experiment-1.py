@@ -117,7 +117,7 @@ if driver.cost is not None or not driver.risk_neutral:
 
 driver.train(train_size, 1000, int(2**10))
 driver.test(test_size)
-driver.test_summary(fr"{folder_name}\test-summary-extra.txt")
+driver.test_summary(fr"{folder_name}\test-summary.txt")
 # driver.plot_distributions(fr"{folder_name}\hist", "upper right")
 
 if book.book_size == 1:

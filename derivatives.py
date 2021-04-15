@@ -459,6 +459,7 @@ class DiscreteGeometricPutCall(Derivative):
 
         return itm * terminal_dga * scale / numeraire[-1]
 
+
     def value(self, time, instrument, numeraire):
         return self._apply(time, instrument, numeraire, "value")
 

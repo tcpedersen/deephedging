@@ -3,6 +3,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import pandas as pd
 
 from time import perf_counter
 from tensorflow_probability.python.internal import special_math
@@ -422,44 +423,76 @@ class HedgeDriver(object):
         self.assert_all_tested()
 
         columns = [
-            {"title": "mean costs", "key": "test_mean_costs"},
-            {"title": "variance costs", "key": "test_variance_costs"},
+            {"title": "name",
+             "key": "name",
+             "type": str},
 
-            {"title": "mean wealth", "key": "test_mean_wealth"},
-            {"title": "variance wealth", "key": "test_variance_wealth"},
+            {"title": "mean costs",
+             "key": "test_mean_costs",
+             "type": float},
 
-            {"title": "mean abs wealth w. price", "key": "test_wealth_with_price_abs_mean"},
-            {"title": "variance wealth w. price", "key": "test_wealth_with_price_variance"},
+            {"title": "variance costs",
+             "key": "test_variance_costs",
+             "type": float},
 
-            {"title": "risk (train)", "key": "train_risk"},
-            {"title": "risk (test)", "key": "test_risk"},
-            {"title": "price", "key": "price"},
-            {"title": "training time", "key": "train_time"},
-            {"title": "trainable vars", "key": "trainable_variables"},
-            {"title": "non-trainable vars", "key": "non_trainable_variables"}
+            {"title": "mean wealth",
+             "key": "test_mean_wealth",
+             "type": float},
+
+            {"title": "variance wealth",
+             "key": "test_variance_wealth",
+             "type": float},
+
+            {"title": "mean abs wealth w. price",
+             "key": "test_wealth_with_price_abs_mean",
+             "type": float},
+
+            {"title": "variance wealth w. price",
+             "key": "test_wealth_with_price_variance",
+             "type": float},
+
+            {"title": "risk (train)",
+             "key": "train_risk",
+             "type": float},
+
+            {"title": "risk (test)",
+             "key": "test_risk",
+             "type": float},
+
+            {"title": "price",
+             "key": "price",
+             "type": float},
+
+            {"title": "training time",
+             "key": "train_time",
+             "type": float},
+
+            {"title": "trainable vars",
+             "key": "trainable_variables",
+             "type": int},
+
+            {"title": "non-trainable vars",
+             "key": "non_trainable_variables",
+             "type": int}
             ]
 
-        case_size = max([len(case["name"]) for case in self.testcases]) + 1
-        block_size = max([len(col["title"]) for col in columns]) + 3
+        dictionary = {}
+        for col in columns:
+            dictionary[col["title"]] = [col["type"](case[col["key"]]) \
+                                        for case in self.testcases]
 
-        header = "".rjust(case_size) + "".join(
-            [col["title"].rjust(block_size) for col in columns])
-        body = ""
-        extra = [self.liability_free] if self.liability_free is not None else []
-        for case in self.testcases + extra:
-            body += case["name"].ljust(case_size)
-            for val in [case[col["key"]] for col in columns]:
-                body += f"{val:.6f}".rjust(block_size)
-            body += "\n"
+        df = pd.DataFrame(dictionary)
 
-        summary = header + "\n" + body
-        summary += "\n\n" + f"payoff: {self.test_mean_payoff: .6f}"
+        appendum = "\n\n" + f"payoff: {self.test_mean_payoff: .6f}"
 
         if file_name is not None:
-            with open(file_name, "w") as file:
-                file.write(summary)
+            df.to_csv(file_name, index=False)
 
-        print(summary)
+            with open(file_name, "a") as file:
+                file.write(appendum)
+
+        with pd.option_context('display.max_columns', None):
+            print(df)
 
 
     def plot_distributions(self, file_name=None, legend_loc="right"):

@@ -97,6 +97,12 @@ class IOMeanVarianceNormaliser:
         self.ynormaliser.fit(tf.unstack(y, axis=-1))
 
 
+    def transform_x(self, x):
+        norm_x = self.xnormaliser.transform(tf.unstack(x, axis=-1))
+
+        return tf.stack(norm_x, axis=-1)
+
+
     def transform(self, x, y):
         """
         Args:
@@ -106,10 +112,10 @@ class IOMeanVarianceNormaliser:
             norm_x: (batch, xdim, timesteps)
             norm_y: (batch, ydim, timesteps)
         """
-        norm_x = self.xnormaliser.transform(tf.unstack(x, axis=-1))
+
         norm_y = self.ynormaliser.transform(tf.unstack(y, axis=-1))
 
-        return tf.stack(norm_x, axis=-1), tf.stack(norm_y, axis=-1)
+        return self.transform_x(x), tf.stack(norm_y, axis=-1)
 
 
     def inverse_transform_y(self, norm_y):

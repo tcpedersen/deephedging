@@ -313,7 +313,12 @@ def random_put_call_book(
     for idx, link in enumerate(linker):
         vol = book.instrument_simulator.volatility[link]
         derivative = derivatives.PutCall(
-            maturity, strike[idx], book.rate, vol, put_call[idx])
+            maturity,
+            strike[idx],
+            book.numeraire_simulator.rate,
+            vol,
+            put_call[idx]
+            )
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book

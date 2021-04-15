@@ -32,7 +32,7 @@ class GradientDriver(object):
 
         self.testcases = []
 
-    def add_testcase(self, name, model):
+    def add_testcase(self, name, model, train_size):
         if isinstance(model, gradient_models.SequenceDeltaNetwork):
             normaliser = preprocessing.IOMeanVarianceNormaliser()
 
@@ -47,6 +47,7 @@ class GradientDriver(object):
             "name": name,
             "model": model,
             "normaliser": normaliser,
+            "train_size": int(train_size),
             "trained": False,
             "tested": False
             })
@@ -80,13 +81,13 @@ class GradientDriver(object):
 
         skip = 2**self.frequency
         raw_data = {
-            "time": time[::skip],
-            "instruments": instruments[..., ::skip],
-            "numeraire": numeraire[::skip],
-            "value": value[..., ::skip],
-            "delta": delta[..., ::skip],
+            "time": time[::skip][..., :-1],
+            "instruments": instruments[..., ::skip][..., :-1],
+            "numeraire": numeraire[::skip][..., :-1],
+            "value": value[..., ::skip][..., :-1],
+            "delta": delta[..., ::skip][..., :-1],
             "payoff": payoff,
-            "adjoint": adjoint[..., ::skip],
+            "adjoint": adjoint[..., ::skip][..., :-1],
             "metrics": metrics
             }
 
@@ -96,7 +97,13 @@ class GradientDriver(object):
         return raw_data
 
 
-    def transform(self, case, raw_data):
+    def transform(self, case, raw_data, only_inputs=False):
+        if only_inputs and case["trained"]:
+            return case["normaliser"].transform_x(raw_data["instruments"])
+        elif only_inputs and not case["trained"]:
+            raise ValueError("if only_inputs is True, then case must be ",
+                             "'trained'.")
+
         keys = ["instruments", "payoff", "adjoint"]
         x, y, dydx = [raw_data[key] for key in keys]
 
@@ -133,15 +140,36 @@ class GradientDriver(object):
         if not case["trained"]:
             raise ValueError("case must be trained before evaluation.")
 
-        inputs, output = self.transform(case, raw_data)
+        inputs = self.transform(case, raw_data, only_inputs=True)
         norm_dydx = case["model"].gradient(inputs)
         dydx = self.inverse_transform(case, norm_dydx)
 
         return dydx
 
 
+    def _get_loss_instance(self):
+        reduction = tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE
+        loss = tf.keras.losses.MeanSquaredError(reduction)
+
+        return loss
+
+    def _compute_weight(self, case, inputs, output):
+        y, dydx = case["model"](inputs)
+        loss = self._get_loss_instance()
+        x = loss(output[0][:, tf.newaxis], y) / loss(output[1], dydx)
+
+        return 1 / (1 + x)
+
+
     def train_case(self, case, batch_size, epochs, raw_data):
         inputs, output = self.transform(case, raw_data)
+
+        inputs = inputs[..., :case["train_size"]]
+
+        if isinstance(output, list):
+            output = [x[..., :case["train_size"]] for x in output]
+        else:
+            output = output[..., :case["train_size"]]
 
         lr_schedule = utils.PeakSchedule(
             self.learning_rate_min, self.learning_rate_max, epochs)
@@ -150,17 +178,15 @@ class GradientDriver(object):
             tf.keras.callbacks.EarlyStopping("loss", patience=10)]
 
         if isinstance(case["model"], gradient_models.SequenceTwinNetwork):
-            # TODO generalise to multiple dimensions
-            # z = tf.math.reduce_std(y) / tf.math.reduce_std(dydx)
-            # weight = 1 / (1 + z)
-            weight = 0.5
+            weight = self._compute_weight(case, inputs, output)
             loss_weights = [weight, 1 - weight]
         else:
             loss_weights = [1.]
 
-        case["model"].compile(optimizer=tf.keras.optimizers.Adam(),
-                              loss="mean_squared_error",
-                              loss_weights=loss_weights)
+        case["model"].compile(
+            optimizer=tf.keras.optimizers.Adam(),
+            loss=self._get_loss_instance(),
+            loss_weights=loss_weights)
 
         case["model"](inputs) # remove initial overhead time
 
@@ -189,13 +215,12 @@ class GradientDriver(object):
 
         for case in self.testcases:
             self.train_case(case, batch_size, epochs, raw_data)
-            case["train_batch_size"] = sample_size
 
         return
 
 
     def test_skip(self):
-        return max([case["train_batch_size"] for case in self.testcases])
+        return max([case["train_size"] for case in self.testcases])
 
 
     def weighted_mape(self, actual, prediction):
@@ -252,6 +277,10 @@ class GradientDriver(object):
         return
 
 
+    def test_summary_of_case(self, file_name=None):
+        pass
+
+
     def test_summary(self, file_name=None):
         columns = [
             {"title": "training time", "key": "train_time"},
@@ -305,9 +334,36 @@ class GradientDriver(object):
         return
 
 
+    def distance_to_line_plot(self, sample_size):
+        skip = self.test_skip()
+        raw_data = self.sample(sample_size, skip, exploring=True)
+
+        dydx_lst = [self.evaluate_case(case, raw_data) \
+                    for case in self.testcases]
+
+        for dim in tf.range(self.book.instrument_dim):
+            for step in tf.range(self.timesteps):
+                plt.figure()
+
+                xaxis = raw_data["delta"][..., dim, step]
+
+                for dydx in dydx_lst:
+                    yaxis = dydx[..., dim, step]
+                    plt.scatter(xaxis, yaxis, s=0.5)
+                plt.legend([case["name"] for case in self.testcases])
+
+                val = min(plt.xlim()[0], plt.ylim()[0])
+                plt.axline(
+                    [val, val],
+                    slope=1.,
+                    color="black")
+
+                plt.show()
+
+
     def make_feature_function(self, case):
         def gradient_function(raw_data):
-            y, dydx = self.evaluate_case(case, raw_data["instruments"])
+            dydx = self.evaluate_case(case, raw_data)
 
             return tf.unstack(dydx * raw_data["numeraire"], axis=-1)[:-1]
 
@@ -432,7 +488,7 @@ def markovian_visualiser(driver, sample_size):
 
         instrument = raw_data["instruments"][:, 0, :]
 
-        for step in tf.range(driver.timesteps + 1):
+        for step in tf.range(driver.timesteps):
             key = tf.argsort(instrument[..., step])
             xaxis = tf.gather(instrument[..., step], key)
 
