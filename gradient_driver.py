@@ -99,7 +99,8 @@ class GradientDriver(object):
 
     def transform(self, case, raw_data, only_inputs=False):
         if only_inputs and case["trained"]:
-            return case["normaliser"].transform_x(raw_data["instruments"])
+            return case["normaliser"].transform_x(
+                raw_data["instruments"][..., :self.timesteps])
         elif only_inputs and not case["trained"]:
             raise ValueError("if only_inputs is True, then case must be ",
                              "'trained'.")
@@ -164,12 +165,12 @@ class GradientDriver(object):
     def train_case(self, case, batch_size, epochs, raw_data):
         inputs, output = self.transform(case, raw_data)
 
-        inputs = inputs[..., :case["train_size"]]
+        inputs = inputs[:case["train_size"], ...]
 
         if isinstance(output, list):
-            output = [x[..., :case["train_size"]] for x in output]
+            output = [x[:case["train_size"], ...] for x in output]
         else:
-            output = output[..., :case["train_size"]]
+            output = output[:case["train_size"], ...]
 
         lr_schedule = utils.PeakSchedule(
             self.learning_rate_min, self.learning_rate_max, epochs)
@@ -196,7 +197,7 @@ class GradientDriver(object):
             batch_size,
             epochs,
             callbacks=callbacks,
-            verbose=2)
+            verbose=0)
         end = perf_counter() - start
 
         case["train_time"] = end
@@ -210,7 +211,8 @@ class GradientDriver(object):
         return
 
 
-    def train(self, sample_size, epochs, batch_size):
+    def train(self, epochs, batch_size):
+        sample_size = max([case["train_size"] for case in self.testcases])
         raw_data = self.sample(sample_size, skip=0, exploring=True)
 
         for case in self.testcases:
@@ -228,15 +230,6 @@ class GradientDriver(object):
         b = utils.cast_apply(tf.reduce_sum, tf.abs(actual), axis=0)
 
         return a / b
-
-
-    def mean_absolute_log_error(self, actual, prediction):
-        error = utils.cast_apply(
-            tf.reduce_mean,
-            tf.math.log(actual / prediction),
-            axis=0)
-
-        return error
 
 
     def mean_squared_error(self, actual, prediction):
@@ -265,7 +258,6 @@ class GradientDriver(object):
             dydx = self.evaluate_case(case, raw_data)
 
             for attr in ["weighted_mape",
-                         "mean_absolute_log_error",
                          "mean_squared_error",
                          "mean_absolute_error"]:
                 error_measure = getattr(self, attr)
@@ -275,10 +267,6 @@ class GradientDriver(object):
             case["tested"] = True
 
         return
-
-
-    def test_summary_of_case(self, file_name=None):
-        pass
 
 
     def test_summary(self, file_name=None):
@@ -352,11 +340,17 @@ class GradientDriver(object):
                     plt.scatter(xaxis, yaxis, s=0.5)
                 plt.legend([case["name"] for case in self.testcases])
 
+                xlim = plt.xlim()
+                ylim = plt.ylim()
+
                 val = min(plt.xlim()[0], plt.ylim()[0])
                 plt.axline(
                     [val, val],
                     slope=1.,
                     color="black")
+
+                plt.xlim(xlim)
+                plt.ylim(ylim)
 
                 plt.show()
 
@@ -365,7 +359,7 @@ class GradientDriver(object):
         def gradient_function(raw_data):
             dydx = self.evaluate_case(case, raw_data)
 
-            return tf.unstack(dydx * raw_data["numeraire"], axis=-1)[:-1]
+            return tf.unstack(dydx * raw_data["numeraire"][:-1], axis=-1)
 
         return gradient_function
 

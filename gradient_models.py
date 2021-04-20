@@ -85,6 +85,7 @@ class SequenceValueNetwork(SequenceNetwork):
         super().build(input_shape, 1)
 
 
+    @tf.autograph.experimental.do_not_convert
     def call(self, inputs, training=False):
         """Implementation of call.
         Args:
@@ -121,6 +122,7 @@ class SequenceTwinNetwork(SequenceNetwork):
         super().build(input_shape, 1)
 
 
+    @tf.autograph.experimental.do_not_convert
     def call(self, inputs, training=False):
         """Implementation of call.
         Args:
@@ -157,6 +159,7 @@ class SequenceDeltaNetwork(SequenceNetwork):
         super().build(input_shape, input_shape[1])
 
 
+    @tf.autograph.experimental.do_not_convert
     def call(self, inputs, training=False):
         """Implementation of call.
         Args:

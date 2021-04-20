@@ -431,3 +431,24 @@ def simple_dga_putcall_book(maturity, spot, strike, rate, drift, sigma, theta):
     book.add_derivative(derivative, 0, 1)
 
     return init_instruments, init_numeraire, book
+
+
+def random_mean_putcall_book(maturity, dimension, seed):
+    init_instruments, init_numeraire, book = random_empty_book(
+        maturity, dimension, dimension, seed)
+
+    init_instruments = tf.ones_like(init_instruments) * 100.
+    init_numeraire = tf.ones_like(init_numeraire)
+    book.numeraire_simulator.rate = 0.
+
+    for dim in tf.range(dimension):
+        derivative = derivatives.PutCall(
+            maturity,
+            init_instruments[dim],
+            book.numeraire_simulator.rate,
+            book.instrument_simulator.volatility[dim],
+            1
+            )
+        book.add_derivative(derivative, dim, 1 / dimension)
+
+    return init_instruments, init_numeraire, book

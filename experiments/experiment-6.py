@@ -6,7 +6,6 @@ import os
 from time import perf_counter
 
 import utils
-import derivatives
 import books
 import gradient_models
 import gradient_driver
@@ -14,49 +13,30 @@ import hedge_models
 
 tf.get_logger().setLevel('ERROR')
 
-timesteps = 13
-init_instruments, init_numeraire, book = books.simple_empty_book(
-    timesteps / 52, 100, 0., 0.05, 0.2)
-init_numeraire = tf.ones_like(init_numeraire)
-
-spread = 10
-itm = derivatives.PutCall(
-    book.maturity,
-    init_instruments - spread / 2,
-    book.instrument_simulator.rate,
-    book.instrument_simulator.volatility,
-    1)
-atm = derivatives.PutCall(
-    book.maturity,
-    init_instruments,
-    book.instrument_simulator.rate,
-    book.instrument_simulator.volatility,
-    1)
-otm = derivatives.PutCall(
-    book.maturity,
-    init_instruments + spread / 2,
-    book.instrument_simulator.rate,
-    book.instrument_simulator.volatility,
-    1)
-
-book.add_derivative(itm, 0, 1)
-book.add_derivative(atm, 0, -2)
-book.add_derivative(otm, 0, 1)
-
 # ==============================================================================
 # === train gradient models
-warmup_train_size = int(sys.argv[1])
+warmup_train_size_twin = int(2**13)
+warmup_train_size_value = int(2**13)
 
-folder_name = r"figures\markovian-add\experiment-5"
+activation = tf.keras.activations.softplus
+layers = 4
+units = 20
+dimension = int(sys.argv[1])
 
-number_of_tests = 1 # too slow to run multiple times
+folder_name = r"figures\markovian-add\experiment-6"
+
+number_of_tests = 2**3
 
 test_warmup_drivers = []
 test_hedge_drivers = []
 
 for num in range(number_of_tests):
-    print(f"size {warmup_train_size} at test {num + 1} ".ljust(80, "="), end="")
+    print(f"dimension {dimension} at test {num + 1} ".ljust(80, "="), end="")
     start = perf_counter()
+
+    timesteps = 13
+    init_instruments, init_numeraire, book = books.random_mean_putcall_book(
+        timesteps / 52, dimension, num)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,
@@ -68,39 +48,37 @@ for num in range(number_of_tests):
         learning_rate_max=1e-2
         )
 
-    warmup_driver.set_exploration(100., 15.)
+    warmup_driver.set_exploration(100.0, 15.0)
 
-    for layers in [2, 3, 4, 5]:
-        for units in [20]:
-            warmup_driver.add_testcase(
-                name=f"value network layers {layers}",
-                model=gradient_models.SequenceValueNetwork(
-                    layers=layers,
-                    units=units,
-                    activation=tf.keras.activations.softplus
-                    ),
-                train_size=warmup_train_size
-                )
+    warmup_driver.add_testcase(
+        name="payoff network",
+        model=gradient_models.SequenceValueNetwork(
+            layers=layers,
+            units=units,
+            activation=activation
+            ),
+        train_size=warmup_train_size_value
+        )
 
-            warmup_driver.add_testcase(
-                name=f"twin network layers {layers}",
-                model=gradient_models.SequenceTwinNetwork(
-                    layers=layers,
-                    units=units,
-                    activation=tf.keras.activations.softplus
-                    ),
-                train_size=warmup_train_size
-                )
+    warmup_driver.add_testcase(
+        name="twin network",
+        model=gradient_models.SequenceTwinNetwork(
+            layers=layers,
+            units=units,
+            activation=activation
+            ),
+        train_size=warmup_train_size_twin
+        )
 
-            warmup_driver.add_testcase(
-                name=f"delta network layers {layers}",
-                model=gradient_models.SequenceDeltaNetwork(
-                    layers=layers,
-                    units=units,
-                    activation=tf.keras.activations.sigmoid
-                    ),
-                train_size=warmup_train_size
-                )
+    warmup_driver.add_testcase(
+        name="adjoint network",
+        model=gradient_models.SequenceDeltaNetwork(
+            layers=layers,
+            units=units,
+            activation=activation
+            ),
+        train_size=warmup_train_size_twin
+        )
 
     warmup_driver.train(100, 64)
     test_warmup_drivers.append(warmup_driver)
@@ -129,6 +107,7 @@ for num in range(number_of_tests):
         feature_function="delta",
         price_type="arbitrage")
 
+
     for case in warmup_driver.testcases:
         driver.add_testcase(
             case["name"],
@@ -138,7 +117,6 @@ for num in range(number_of_tests):
             feature_function=warmup_driver.make_feature_function(case),
             price_type="arbitrage")
 
-    # no need to train as test computes analytical ES
     driver.train(train_size, 1, int(2**10))
     driver.test(test_size)
 
@@ -148,7 +126,7 @@ for num in range(number_of_tests):
     print(f" {end:.3f}s")
 
 
-file_name = os.path.join(folder_name, fr"size-{warmup_train_size}.txt")
+file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
 if os.path.exists(file_name):
     os.remove(file_name)
 

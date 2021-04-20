@@ -94,6 +94,8 @@ class HedgeDriver(object):
         self.learning_rate = float(learning_rate)
         self.optimizer = tf.keras.optimizers.Adam
 
+        self.verbose = 0
+
         early_stopping = tf.keras.callbacks.EarlyStopping(
             monitor="loss",
             patience=5,
@@ -102,7 +104,7 @@ class HedgeDriver(object):
         )
         reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
             monitor="loss",
-            verbose=1,
+            verbose=self.verbose,
             patience=2
         )
 
@@ -325,7 +327,7 @@ class HedgeDriver(object):
         case["history"] = case["model"].fit(
             input_data,
             callbacks=self.callbacks,
-            verbose=2,
+            verbose=self.verbose,
             **kwargs)
         end = perf_counter() - start
 
@@ -543,6 +545,35 @@ class HedgeDriver(object):
             plt.plot(x, alpha + x, "--", color="black", dpi=DPI)
 
             plt.show()
+
+
+def driver_data_dumb(list_of_drivers, result_keys, file_name):
+    for idx in range(len(list_of_drivers[0].testcases)):
+        with open(file_name, "a") as file:
+            name = list_of_drivers[0].testcases[idx]["name"]
+            file.write("".ljust(80, "=") + "\n")
+            file.write("=== " + name + "\n")
+
+        dict_of_results = {key: [] for key in result_keys}
+
+        for driver in list_of_drivers:
+            case = driver.testcases[idx]
+
+            for key in result_keys:
+                dict_of_results[key].append(case[key])
+
+        for key in result_keys:
+            with open(file_name, "a") as file:
+                file.write(key + "\n")
+            pd.DataFrame(dict_of_results[key]).to_csv(
+                file_name,
+                header=False,
+                index=False,
+                mode="a"
+            )
+
+        with open(file_name, "a") as file:
+            file.write("\n\n")
 
 
 def plot_markovian_payoff(driver, size, price, file_name=None):
