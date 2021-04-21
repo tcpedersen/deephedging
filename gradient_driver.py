@@ -6,7 +6,7 @@ from time import perf_counter
 
 import utils
 import preprocessing
-from constants import FLOAT_DTYPE
+from constants import FLOAT_DTYPE, DPI
 import gradient_models
 
 class GradientDriver(object):
@@ -469,7 +469,7 @@ def dga_putcall_visualiser(driver, sample_size):
             plt.show()
 
 
-def markovian_visualiser(driver, sample_size):
+def markovian_visualiser(driver, sample_size, file_name=None):
     skip = driver.test_skip()
     raw_data = driver.sample(
         sample_size,
@@ -486,20 +486,6 @@ def markovian_visualiser(driver, sample_size):
             key = tf.argsort(instrument[..., step])
             xaxis = tf.gather(instrument[..., step], key)
 
-            # # value
-            # plt.figure()
-            # prediction = tf.gather(y[..., step], key).numpy()
-            # target = tf.gather(raw_data["value"][..., step], key).numpy()
-            # data = tf.gather(raw_data["payoff"], key).numpy()
-
-            # plt.scatter(xaxis, data, color="grey", s=0.5, alpha=0.5)
-            # plt.plot(xaxis, target, "--", color="red")
-            # plt.plot(xaxis, prediction, color="black")
-
-            # plt.title(f"value {step}")
-            # plt.show()
-
-            # delta
             plt.figure()
             prediction = tf.gather(dydx[..., 0, step], key).numpy()
             target = tf.gather(raw_data["delta"][..., 0, step], key).numpy()
@@ -509,5 +495,11 @@ def markovian_visualiser(driver, sample_size):
             plt.plot(xaxis, target, "--", color="red")
             plt.plot(xaxis, prediction, color="black")
 
-            plt.title(f"delta {step}")
+            plt.xlabel("terminal instrument value")
+            plt.ylabel("delta")
+
+            plt.legend(["target", "approximation", "adjoints"])
+
+            if file_name is not None:
+                plt.savefig(file_name + f"-{case['name']}.png", dpi=DPI)
             plt.show()

@@ -25,7 +25,7 @@ dimension = int(sys.argv[1])
 
 folder_name = r"figures\markovian-add\experiment-6"
 
-number_of_tests = 2**3
+number_of_tests = 2**4
 
 test_warmup_drivers = []
 test_hedge_drivers = []
