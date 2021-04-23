@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
 import abc
+import math
 
 from utils import norm_cdf, norm_pdf
 from constants import FLOAT_DTYPE, INT_DTYPE
@@ -473,6 +474,71 @@ class DiscreteGeometricPutCall(Derivative):
         scale = (self.maturity - time + dt) / instrument
 
         return unscaled * dga * tf.pow(instrument, ttm) * scale
+
+
+class JumpPutCall(Derivative):
+    def __init__(self, maturity, strike, rate, volatility,
+                 jumpsize, jumpvol, intensity, theta):
+        self.maturity = maturity
+        self.strike = strike
+        self.rate = rate
+        self.volatility = volatility
+        self.jumpsize = jumpsize
+        self.jumpvol = jumpvol
+        self.theta = theta
+        self.intensity = intensity
+
+        self.maxiter = 100
+
+
+    def payoff(self, time, instrument, numeraire):
+        option = PutCall(self.maturity, self.strike, self.rate, self.volatility,
+                         self.theta)
+
+        return option.payoff(time, instrument, numeraire)
+
+
+    def adjoint(self, time, instrument, numeraire):
+        option = PutCall(self.maturity, self.strike, self.rate, self.volatility,
+                         self.theta)
+
+        return option.adjoint(time, instrument, numeraire)
+
+
+    def mertonsum(self, time, instrument, numeraire, func):
+        # hack: set last value to one to avoid overflow in nrate and nvol.
+        # zero ttm has no influence ofn price nor delta.
+        ttm = self.maturity - time
+        adjttm = tf.where(tf.equal(ttm, 0.), 1., ttm)
+
+        value = tf.zeros_like(instrument)
+
+        volsq = self.volatility * self.volatility
+        jumpvolsq = self.jumpvol * self.jumpvol
+
+        m = self.jumpsize + jumpvolsq / 2.
+        jumpcomp = self.intensity * (math.exp(m) - 1.)
+
+        nfac = [math.factorial(n) for n in range(self.maxiter)]
+        expterm = tf.math.exp(-self.intensity * ttm)
+
+        for n in tf.range(self.maxiter):
+            nfloat = tf.cast(n, FLOAT_DTYPE)
+            nvol = tf.sqrt(volsq + nfloat * jumpvolsq / adjttm)
+            nrate = self.rate + m * nfloat / adjttm - jumpcomp
+            prob = expterm * tf.pow(self.intensity * ttm, nfloat) / nfac[n]
+            raw_value = func(ttm, instrument, self.strike, nrate, nvol,
+                             self.theta)
+            value += prob * raw_value
+
+        return value / numeraire[-1]
+
+
+    def value(self, time, instrument, numeraire):
+        return self.mertonsum(time, instrument, numeraire, black_price)
+
+    def delta(self, time, instrument, numeraire):
+        return self.mertonsum(time, instrument, numeraire, black_delta)
 
 
 # ==============================================================================

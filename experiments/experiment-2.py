@@ -1,171 +1,156 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
+import os
 import sys
 
-import hedge_models
-import books
-import utils
-import preprocessing
-import approximators
+from functools import partial
+from time import perf_counter
 
+import hedge_models
+import utils
+import approximators
+import preprocessing
+import books
+
+# ==============================================================================
+if str(sys.argv[1]) == "cost":
+    cost = True
+else:
+    cost = False
+
+folder_name = r"results\experiment-2\cost" if cost else r"results\experiment-2\no-cost"
 
 # ==============================================================================
 # === hyperparameters
 train_size, test_size, timesteps = int(2**18), int(2**18), 12
-hedge_multiplier = 1 if str(sys.argv[3]) == "normal" else 5
+hedge_multiplier = 1
 alpha = 0.95
+dimension = int(sys.argv[2])
 
-if str(sys.argv[1]) == "univariate":
-    units = 3
-elif str(sys.argv[1]) == "multivariate":
-    units = 10
-else:
-    raise ValueError
-
-shallow_layers = 2
-shallow_units = units
-deep_layers = 4
-deep_units = units
+units = 15
+layers = 4
 
 activation = tf.keras.activations.softplus
+num_trials = 8
+lst_of_drivers =  []
 
-# ==============================================================================
-# === setup
-if str(sys.argv[1]) == "univariate":
-    init_instruments, init_numeraire, book = books.simple_dga_putcall_book(
-        timesteps / 12, 100, 100**(timesteps / 12), 0.02, 0.05, 0.4, 1)
-elif str(sys.argv[1]) == "multivariate":
+if cost:
+    risk_measure = partial(hedge_models.MeanVariance, aversion=1.)
+else:
+    risk_measure = partial(hedge_models.ExpectedShortfall, alpha=alpha)
+
+
+for num in range(num_trials):
+    print(f"dimension {dimension} at test {num + 1} ".ljust(80, "="), end="")
+    start = perf_counter()
+
     init_instruments, init_numeraire, book = books.random_dga_putcall_book(
-        timesteps / 12, 25, 10, 10, 69)
-else:
-    raise ValueError
+        timesteps / 12, 2 * dimension, dimension, dimension, num)
 
-driver = utils.HedgeDriver(
-    timesteps=timesteps * hedge_multiplier,
-    frequency=0, # no need for frequency
-    init_instruments=init_instruments,
-    init_numeraire=init_numeraire,
-    book=book,
-    cost=1/100 if str(sys.argv[2]) == "cost" else None,
-    risk_neutral=False if str(sys.argv[2]) == "cost" else True,
-    learning_rate=1e-1
-    )
-
-# === set folder name
-outer_folder = f"discrete-{'multivariate' if book.instrument_dim > 1 else 'univariate'}"
-if driver.cost is not None:
-    inner_folder = "cost"
-elif hedge_multiplier > 1:
-    inner_folder = "no-cost-frequent"
-else:
-    inner_folder = "no-cost"
-
-folder_name = fr"figures\{outer_folder}\{inner_folder}"
-
-# =============================================================================
-# === train
-# driver.add_testcase(
-#     "shallow network",
-#     hedge_models.NeuralHedge(
-#         timesteps=timesteps * hedge_multiplier,
-#         instrument_dim=book.instrument_dim,
-#         internal_dim=0,
-#         num_layers=shallow_layers,
-#         num_units=shallow_units,
-#         activation=activation),
-#     risk_measure=hedge_models.ExpectedShortfall(alpha),
-#     normaliser=preprocessing.MeanVarianceNormaliser(),
-#     feature_function="log_martingale",
-#     price_type="indifference")
-
-# driver.add_testcase(
-#     "deep network",
-#     hedge_models.NeuralHedge(
-#         timesteps=timesteps * hedge_multiplier,
-#         instrument_dim=book.instrument_dim,
-#         internal_dim=0,
-#         num_layers=deep_layers,
-#         num_units=deep_units,
-#         activation=activation),
-#     risk_measure=hedge_models.ExpectedShortfall(alpha),
-#     normaliser=preprocessing.MeanVarianceNormaliser(),
-#     feature_function="log_martingale",
-#     price_type="indifference")
-
-driver.add_testcase(
-    "shallow memory network",
-    hedge_models.NeuralHedge(
+    driver = utils.HedgeDriver(
         timesteps=timesteps * hedge_multiplier,
-        instrument_dim=book.instrument_dim,
-        internal_dim=book.instrument_dim,
-        num_layers=shallow_layers,
-        num_units=shallow_units * 2,
-        activation=activation),
-    risk_measure=hedge_models.ExpectedShortfall(alpha),
-    normaliser=preprocessing.MeanVarianceNormaliser(),
-    feature_function="log_martingale",
-    price_type="indifference")
+        frequency=0, # no need for frequency
+        init_instruments=init_instruments,
+        init_numeraire=init_numeraire,
+        book=book,
+        cost=1/100 if cost else None,
+        risk_neutral=not cost,
+        learning_rate=1e-1
+        )
 
-# driver.add_testcase(
-#     "deep memory network",
-#     hedge_models.NeuralHedge(
-#         timesteps=timesteps * hedge_multiplier,
-#         instrument_dim=book.instrument_dim,
-#         internal_dim=book.instrument_dim,
-#         num_layers=deep_layers,
-#         num_units=deep_units * 2,
-#         activation=activation),
-#     risk_measure=hedge_models.ExpectedShortfall(alpha),
-#     normaliser=preprocessing.MeanVarianceNormaliser(),
-#     feature_function="log_martingale",
-#     price_type="indifference")
+    driver.add_testcase(
+        name="continuous-time",
+        model=hedge_models.FeatureHedge(),
+        risk_measure=risk_measure(),
+        normaliser=None,
+        feature_function="delta",
+        price_type="arbitrage")
 
-# driver.add_testcase(
-#     "lstm",
-#     hedge_models.RecurrentHedge(
-#         timesteps=timesteps * hedge_multiplier,
-#         rnn=tf.keras.layers.LSTM,
-#         instrument_dim=book.instrument_dim,
-#         cells=2,
-#         units=15),
-#     risk_measure=hedge_models.ExpectedShortfall(alpha),
-#     normaliser=preprocessing.MeanVarianceNormaliser(),
-#     feature_function="log_martingale_with_time",
-#     price_type="indifference"
-#     )
-#
-# driver.add_testcase(
-#     name="identity feature map",
-#     model=hedge_models.LinearFeatureHedge(
-#         timesteps * hedge_multiplier,
-#         book.instrument_dim,
-#         [approximators.IdentityFeatureMap] * (1 + int(driver.cost is not None))
-#     ),
-#     risk_measure=hedge_models.ExpectedShortfall(alpha),
-#     normaliser=None,
-#     feature_function="delta",
-#     price_type="indifference")
-#
-# driver.add_testcase(
-#     name="continuous-time",
-#     model=hedge_models.FeatureHedge(),
-#     risk_measure=hedge_models.ExpectedShortfall(alpha),
-#     normaliser=None,
-#     feature_function="delta",
-#     price_type="arbitrage")
-
-if driver.cost is not None or not driver.risk_neutral:
-    driver.add_liability_free(
-        hedge_models.LinearFeatureHedge(
+    driver.add_testcase(
+        "deep network",
+        hedge_models.NeuralHedge(
             timesteps=timesteps * hedge_multiplier,
             instrument_dim=book.instrument_dim,
-            mappings=[approximators.IdentityFeatureMap] \
-                * (1 + (driver.cost is not None))),
-        risk_measure=hedge_models.ExpectedShortfall(alpha),
+            internal_dim=0,
+            num_layers=layers,
+            num_units=units,
+            activation=activation),
+        risk_measure=risk_measure(),
         normaliser=preprocessing.MeanVarianceNormaliser(),
-        feature_function="log_martingale")
+        feature_function="log_martingale",
+        price_type="indifference")
 
-driver.train(train_size, 1000, int(2**10))
-driver.test(test_size)
-driver.test_summary(fr"{folder_name}\test-summary-shallow-memory-extra.txt")
-# driver.plot_distributions(fr"{folder_name}\hist", "upper right")
+    driver.add_testcase(
+        name="identity feature map",
+        model=hedge_models.LinearFeatureHedge(
+            timesteps * hedge_multiplier,
+            book.instrument_dim,
+            [approximators.IdentityFeatureMap] * (1 + int(driver.cost is not None))
+        ),
+        risk_measure=risk_measure(),
+        normaliser=None,
+        feature_function="delta",
+        price_type="indifference")
+
+    driver.add_testcase(
+        "deep memory network",
+        hedge_models.NeuralHedge(
+            timesteps=timesteps * hedge_multiplier,
+            instrument_dim=book.instrument_dim,
+            internal_dim=book.instrument_dim,
+            num_layers=layers,
+            num_units=units,
+            activation=activation),
+        risk_measure=risk_measure(),
+        normaliser=preprocessing.MeanVarianceNormaliser(),
+        feature_function="log_martingale",
+        price_type="indifference")
+
+    driver.add_testcase(
+        "lstm",
+        hedge_models.RecurrentHedge(
+            timesteps=timesteps * hedge_multiplier,
+            rnn=tf.keras.layers.LSTM,
+            instrument_dim=book.instrument_dim,
+            cells=2,
+            units=15),
+        risk_measure=risk_measure(),
+        normaliser=preprocessing.MeanVarianceNormaliser(),
+        feature_function="log_martingale_with_time",
+        price_type="indifference"
+        )
+
+
+    if driver.cost is not None or not driver.risk_neutral:
+        driver.add_liability_free(
+            hedge_models.LinearFeatureHedge(
+                timesteps=timesteps * hedge_multiplier,
+                instrument_dim=book.instrument_dim,
+                mappings=[approximators.IdentityFeatureMap] \
+                    * (1 + (driver.cost is not None))),
+            risk_measure=risk_measure(),
+            normaliser=preprocessing.MeanVarianceNormaliser(),
+            feature_function="log_martingale")
+
+    driver.train(train_size, 1000, int(2**10))
+    driver.test(test_size)
+    lst_of_drivers.append(driver)
+
+    end = perf_counter() - start
+    print(f" {end:.3f}s")
+
+
+file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
+if os.path.exists(file_name):
+    os.remove(file_name)
+
+utils.driver_data_dumb(
+    lst_of_drivers,
+    ["train_risk", "test_risk",
+     "test_mean_value", "test_mean_abs_value", "test_variance_value",
+     "test_mean_costs", "test_mean_abs_costs", "test_variance_costs",
+     "test_mean_wealth", "test_mean_abs_wealth", "test_variance_wealth",
+     "test_wealth_with_price_abs_mean", "test_wealth_with_price_variance",
+     "price", "train_time"],
+    file_name
+    )

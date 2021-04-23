@@ -425,3 +425,58 @@ class test_DiscreteGeometricPutCall(unittest.TestCase):
 
             tf.debugging.assert_near(result_adjoint[..., k],
                                      expected_adjoint[..., k])
+
+
+class test_JumpPutCall(unittest.TestCase):
+    def test_call(self):
+        maturity, strike, rate, volatility, theta = 0.25, 90, 0.05, 0.2, 1
+        jumpsize, jumpvol, intensity = 0.3, 0.2, 2.3
+        putcall = derivatives.JumpPutCall(maturity, strike, rate, volatility,
+                                          jumpsize, jumpvol, intensity, theta)
+
+        time = tf.constant([0, 0.1, maturity], FLOAT_DTYPE)
+        instrument = tf.constant([[100, 110,  91],
+                                  [100, 121, 85]], FLOAT_DTYPE)
+        numeraire = tf.math.exp(rate * time)
+
+        price_expected = tf.constant([
+            [16.8930892792925, 21.1647925209847, 1.],
+            [16.8930892792925, 31.7191011838734, 0.]
+            ]) / numeraire
+
+        delta_expected = tf.constant([
+            [0.573198330210462, 0.900506824015922, 1.],
+            [0.573198330210462, 0.990415604060569, 0.]
+            ]) / numeraire
+
+        payoff_expected = price_expected[..., -1]
+
+        adjoint_expected = tf.constant([
+            [0.91, 91 / 110, 1.],
+            [0., 0., 0.]
+            ]) / numeraire[-1]
+
+        price_result = putcall.value(time, instrument, numeraire)
+        delta_result = putcall.delta(time, instrument, numeraire)
+        payoff_result = putcall.payoff(time, instrument, numeraire)
+        adjoint_result = putcall.adjoint(time, instrument, numeraire)
+
+        assert_near(price_result, price_expected)
+        assert_near(delta_result, delta_expected)
+        assert_near(payoff_result, payoff_expected)
+        assert_near(adjoint_result, adjoint_expected)
+
+# spot = 121
+# nowtime = 0.1
+
+# inflator = math.exp(rate * (maturity - nowtime))
+# model = MertonModel(spot * inflator,
+#                     [volatility, intensity, jumpsize, jumpvol], rate)
+# option = EuropeanCallOption([nowtime, maturity], [strike])
+
+# with tf.GradientTape() as tape:
+#     tape.watch(model.state)
+#     y = merton_call_price(model, option, 100)
+# dydx = tape.gradient(y, model.state)
+
+# print(f"{float(dydx * inflator):.15f}")

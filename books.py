@@ -412,11 +412,11 @@ def random_dga_putcall_book(
     linker = random_linker(book_size, instrument_dim)
 
     for idx, link in enumerate(linker):
-        expected = book.init_instruments[link]**maturity
+        expected = init_instruments[link]**maturity
         strike = uniform((1, ), *pct_interval(expected, 0.1), FLOAT_DTYPE)
         vol = book.instrument_simulator.volatility[link]
         derivative = derivatives.DiscreteGeometricPutCall(
-            maturity, strike, book.rate, vol, put_call[idx])
+            maturity, strike, book.numeraire_simulator.rate, vol, put_call[idx])
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book

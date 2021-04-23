@@ -3,6 +3,7 @@ import tensorflow as tf
 import numpy as np
 import abc
 
+import utils
 import approximators
 from constants import FLOAT_DTYPE
 
@@ -62,7 +63,6 @@ class BaseHedge(tf.keras.models.Model, abc.ABC):
             inputs: [features, martingales, payoff]
                 features: list of (batch_size, instrument_dim) of len timesteps
                 martingales: (batch_size, instrument_dim, timesteps + 1)
-                payoff: (batch_size, ) payoff at time timesteps + 1
         Returns:
             value: (batch_size, )
             costs: (batch_size, )
@@ -274,30 +274,20 @@ class OCERiskMeasure(abc.ABC):
         """Returns the true value of the estimator."""
 
 
-class EntropicRisk(OCERiskMeasure):
-    def __init__(self, risk_aversion):
+class MeanVariance(OCERiskMeasure):
+    def __init__(self, aversion):
         super().__init__()
-        self.aversion = float(risk_aversion)
-
-
-    def __call__(self, x: tf.Tensor):
-        redundant = tf.square(self.w) # to ensure w = 0 in optimum.
-        batch_size = tf.cast(tf.shape(x)[0], FLOAT_DTYPE)
-
-        return (tf.math.reduce_logsumexp(-self.aversion * x) \
-            - tf.math.log(batch_size)) / self.aversion + redundant
+        self.aversion = tf.constant(float(aversion), FLOAT_DTYPE)
 
 
     def loss(self, x):
-        # clip as tf.exp will otherwise overflow.
-        xc = tf.clip_by_value(x, x.dtype.min,
-                              tf.math.log(FLOAT_DTYPE.max) / self.aversion - 1.)
-        return tf.math.exp(self.aversion * xc) \
-            - (1. + tf.math.log(self.aversion)) / self.aversion
+        return x + self.aversion / 2. * tf.square(x)
 
 
     def evaluate(self, x):
-        raise NotImplementedError("evaluate not implemented for EntropicRisk.")
+        mean, variance = utils.cast_apply(tf.nn.moments, x, axes=0)
+
+        return self.aversion / 2. * variance - mean
 
 
 class ExpectedShortfall(OCERiskMeasure):

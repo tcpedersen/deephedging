@@ -133,3 +133,4 @@ figures/*
 noncode/*
 *.docx
 *.tmp
+*.bat
