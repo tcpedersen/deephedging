@@ -81,31 +81,6 @@ class test_MeanVarianceNormaliser(unittest.TestCase):
         assert_near(normaliser.inverse_transform(outputs), inputs)
 
 
-
-class test_ZeroComponentAnalysis(unittest.TestCase):
-    def test_degenerate_col(self):
-        batch, height, width, degenerate = 2**20, 3, 2, 1
-        x = get_degenerate_sample(batch, height, width, degenerate, 69)
-
-        normaliser = preprocessing.ZeroComponentAnalysis()
-        xn = normaliser.fit_transform(x)
-
-        # test mean
-        assert_near(tf.reduce_mean(xn, 0), tf.zeros_like(x[0, ...]))
-
-        # test covariance
-        cov_result = tfp.stats.covariance(xn, sample_axis=0, event_axis=1)
-
-        mask = tf.equal(x[:height, ...], x[:height, ..., degenerate, tf.newaxis])
-        cov_expected = tf.transpose(tf.eye(height, batch_shape=(width, )), [1, 2, 0])
-        cov_expected = tf.where(mask, 0, cov_expected)
-
-        assert_near(cov_result, cov_expected, atol=1e-4)
-
-        y = normaliser.inverse_transform(xn)
-        assert_near(y, x, atol=1e-6)
-
-
 class test_DifferentialMeanVarianceNormaliser(unittest.TestCase):
     @unittest.skip("convergence too slow.")
     def test_normal(self):

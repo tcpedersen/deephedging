@@ -375,8 +375,8 @@ def random_barrier_book(
 
         vol = book.instrument_simulator.volatility[link]
         derivative = derivatives.BarrierCall(
-            maturity, strike[idx], barrier, book.rate, vol, outin[idx],
-            updown[idx])
+            maturity, strike[idx], barrier, book.numeraire_simulator.rate,
+            vol, outin[idx], updown[idx])
         book.add_derivative(derivative, link, exposure[idx])
 
     return init_instruments, init_numeraire, book

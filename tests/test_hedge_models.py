@@ -23,17 +23,3 @@ class test_OCERiskMeasure(unittest.TestCase):
 
         tf.debugging.assert_near(result_fitted, expected, atol=1e-3)
         tf.debugging.assert_near(result_evaluate, expected, atol=1e-3)
-
-
-    def test_EntropicRisk(self):
-        aversion = 2.
-        risk_measure = hedge_models.EntropicRisk(aversion)
-
-        # Entropic risk is just log of MGF divided by aversion
-        loss = tf.math.sobol_sample(1, 2**19, dtype=FLOAT_DTYPE)
-        risk_measure.w.assign(0.)
-
-        result = risk_measure(-loss)
-        expected = tf.math.log((tf.exp(aversion) - 1) / aversion) / aversion
-
-        tf.debugging.assert_near(result, expected)
