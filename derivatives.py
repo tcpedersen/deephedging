@@ -478,7 +478,7 @@ class DiscreteGeometricPutCall(Derivative):
 
 class JumpPutCall(Derivative):
     def __init__(self, maturity, strike, rate, volatility,
-                 jumpsize, jumpvol, intensity, theta):
+                 intensity, jumpsize, jumpvol, theta):
         self.maturity = maturity
         self.strike = strike
         self.rate = rate

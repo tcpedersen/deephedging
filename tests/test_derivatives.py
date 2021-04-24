@@ -432,7 +432,7 @@ class test_JumpPutCall(unittest.TestCase):
         maturity, strike, rate, volatility, theta = 0.25, 90, 0.05, 0.2, 1
         jumpsize, jumpvol, intensity = 0.3, 0.2, 2.3
         putcall = derivatives.JumpPutCall(maturity, strike, rate, volatility,
-                                          jumpsize, jumpvol, intensity, theta)
+                                          intensity, jumpsize, jumpvol, theta)
 
         time = tf.constant([0, 0.1, maturity], FLOAT_DTYPE)
         instrument = tf.constant([[100, 110,  91],
@@ -465,18 +465,3 @@ class test_JumpPutCall(unittest.TestCase):
         assert_near(delta_result, delta_expected)
         assert_near(payoff_result, payoff_expected)
         assert_near(adjoint_result, adjoint_expected)
-
-# spot = 121
-# nowtime = 0.1
-
-# inflator = math.exp(rate * (maturity - nowtime))
-# model = MertonModel(spot * inflator,
-#                     [volatility, intensity, jumpsize, jumpvol], rate)
-# option = EuropeanCallOption([nowtime, maturity], [strike])
-
-# with tf.GradientTape() as tape:
-#     tape.watch(model.state)
-#     y = merton_call_price(model, option, 100)
-# dydx = tape.gradient(y, model.state)
-
-# print(f"{float(dydx * inflator):.15f}")

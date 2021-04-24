@@ -129,8 +129,6 @@ class GBM(Simulator):
             rate: float
             drift: (dimension, )
             diffusion: (dimension, None)
-        Returns:
-            None
         """
         self.rate = float(rate)
         self.drift = tf.convert_to_tensor(drift, FLOAT_DTYPE)
@@ -150,6 +148,43 @@ class GBM(Simulator):
         rvs = tf.exp(m + v * rvs)
 
         return state * rvs
+
+
+class JumpGBM(GBM):
+    def __init__(self, rate, drift, diffusion, intensity, jumpsize, jumpvol):
+        """Initialisation of GBM.
+        Args:
+            rate: float
+            drift: (dimension, )
+            diffusion: (dimension, None)
+            intensity: float
+            jumpsize: float
+            jumpvol: jumpvol
+        """
+        if len(drift) > 1:
+            raise NotImplementedError("multivariate not implemented.")
+        super().__init__(rate, drift, diffusion)
+
+        self.intensity = float(intensity)
+        self.jumpsize = float(jumpsize)
+        self.jumpvol = float(jumpvol)
+
+        m = self.jumpsize + tf.square(self.jumpvol) / 2.
+        self.comp = self.intensity * (tf.math.exp(m) - 1)
+
+
+    def advance(self, state, rvs, dt, risk_neutral):
+        # TODO make jump distribution depend on risk_neutral
+        if not risk_neutral:
+            raise NotImplementedError("does not support P-measure.")
+
+        nonjump = super().advance(state, rvs, dt, risk_neutral)
+        poisson = tf.random.poisson(rvs.shape, self.intensity * dt, FLOAT_DTYPE)
+        normals = tf.random.normal(rvs.shape, dtype=FLOAT_DTYPE)
+        logjumps = poisson * self.jumpsize + tf.sqrt(poisson) \
+            * self.jumpvol * normals
+
+        return nonjump * tf.exp(logjumps - self.comp * dt)
 
 
 class ConstantBankAccount(Simulator):
