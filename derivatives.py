@@ -488,7 +488,7 @@ class JumpPutCall(Derivative):
         self.theta = theta
         self.intensity = intensity
 
-        self.maxiter = 100
+        self.maxiter = 25
 
 
     def payoff(self, time, instrument, numeraire):

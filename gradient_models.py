@@ -5,7 +5,8 @@ import abc
 from tensorflow.keras.layers import Dense
 
 class FeedForwardNeuralNetwork(tf.keras.layers.Layer):
-    def __init__(self, layers, units, output_dim, activation):
+    def __init__(self, layers, units, output_dim, activation,
+                 output_activation=None):
         super().__init__()
 
         self.hidden_layers = []
@@ -13,7 +14,7 @@ class FeedForwardNeuralNetwork(tf.keras.layers.Layer):
             layer = Dense(units, activation=activation)
             self.hidden_layers.append(layer)
 
-        self.output_layer = Dense(output_dim)
+        self.output_layer = Dense(output_dim, activation=output_activation)
 
     def call(self, inputs, training=False):
         x = inputs
@@ -126,16 +127,18 @@ class SequenceTwinNetwork(SequenceNetwork):
     def call(self, inputs, training=False):
         """Implementation of call.
         Args:
-            inputs: (batch, dimension, timesteps)
+            inputs:
+                x: (batch, input_dim, timesteps)
         Returns:
-            output: (batch, timesteps), (batch, None, timesteps)
+            output:
+                y: (batch, output_dim, timesteps)
+                dydx: (batch, output_dim, input_dim, timesteps)
         """
         outputs = []
         gradients = []
 
         for step, network in enumerate(self.networks):
             x = inputs[..., step]
-
             with tf.GradientTape(watch_accessed_variables=False) as tape:
                 tape.watch(x)
                 y = network(x, training=training)
@@ -198,3 +201,63 @@ class SequencePolynomial(tf.keras.Model):
 
     def fit(self, x, y, weight, **kwargs):
         raise NotImplementedError()
+
+
+class SequenceFullTwinNetwork(tf.keras.Model):
+    def __init__(self, timesteps, layers, units, activation, output_dim):
+        super().__init__()
+
+        self.networks = []
+        for _ in range(timesteps):
+            network = FeedForwardNeuralNetwork(
+                layers=layers,
+                units=units,
+                output_dim=output_dim,
+                activation=activation,
+                output_activation=activation
+                )
+
+            self.networks.append(network)
+
+
+    def build(self, input_shape):
+        step_input_shape = tf.TensorShape((input_shape[0], input_shape[1]))
+        for network in self.networks:
+            network.build(step_input_shape)
+
+
+    @tf.function
+    def singlecall(self, x, network, training):
+        with tf.GradientTape(watch_accessed_variables=False) as tape:
+            tape.watch(x)
+            y = network(x, training=training)
+        dydx = tape.batch_jacobian(y, x)
+
+        return y, dydx
+
+
+    @tf.autograph.experimental.do_not_convert
+    def call(self, inputs, training=False):
+        """Implementation of call.
+        Args:
+            inputs:
+                x: (batch, input_dim, timesteps)
+        Returns:
+            output:
+                y: (batch, output_dim, timesteps)
+                dydx: (batch, output_dim, input_dim, timesteps)
+        """
+        outputs = []
+        gradients = []
+
+        for step, network in enumerate(self.networks):
+            x = inputs[..., step]
+            y, dydx = self.singlecall(x, network, training)
+
+            outputs.append(y)
+            gradients.append(dydx)
+
+        return tf.stack(outputs, -1), tf.stack(gradients, -1)
+
+    def gradient(self, inputs, training=False):
+        return self(inputs, training=training)[1]

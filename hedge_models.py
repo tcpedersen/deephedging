@@ -60,7 +60,7 @@ class BaseHedge(tf.keras.models.Model, abc.ABC):
         numeraire.
 
         Args:
-            inputs: [features, martingales, payoff]
+            inputs: [features, martingales]
                 features: list of (batch_size, instrument_dim) of len timesteps
                 martingales: (batch_size, instrument_dim, timesteps + 1)
         Returns:

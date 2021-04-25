@@ -148,7 +148,7 @@ class DifferentialMeanVarianceNormaliser(object):
     def fit(self, x, y):
         """Assumes:
             x: (batch, xdim, timesteps)
-            y: (batch, )
+            y: (batch, ydim)
         """
         # major numerical imprecision in reduce_mean for tf.float32,
         # so convert to tf.float64 before calculating moments.
@@ -169,15 +169,17 @@ class DifferentialMeanVarianceNormaliser(object):
         return tf.cast(norm_y, y.dtype)
 
     def transform_dydx(self, dydx):
-        norm_dydx = tf.cast(dydx, tf.float64) * tf.sqrt(self.xvar / self.yvar)
+        cdydx = tf.cast(dydx, tf.float64)
+        scale = self.xvar / self.yvar[..., tf.newaxis, tf.newaxis]
+        norm_dydx = cdydx * tf.sqrt(scale)
 
         return tf.cast(norm_dydx, dydx.dtype)
 
     def transform(self, x, y, dydx):
         """Assumes:
             x: (batch, xdim, timesteps)
-            y: (batch, )
-            dydx: (batch, xdim, timesteps)
+            y: (batch, ydim)
+            dydx: (batch, ydim, xdim, timesteps)
         """
         return self.transform_x(x), self.transform_y(y), \
             self.transform_dydx(dydx)
@@ -190,13 +192,18 @@ class DifferentialMeanVarianceNormaliser(object):
 
 
     def inverse_transform_y(self, norm_y):
-        y = tf.sqrt(self.yvar) * tf.cast(norm_y, tf.float64) + self.ymean
+        cnorm_y = tf.cast(norm_y, tf.float64)
+        y = tf.sqrt(self.yvar[tf.newaxis, :, tf.newaxis]) * cnorm_y \
+            + self.ymean[tf.newaxis, :, tf.newaxis]
 
         return tf.cast(y, norm_y.dtype)
 
 
     def inverse_transform_dydx(self, norm_dydx):
-        dydx = tf.cast(norm_dydx, tf.float64) * tf.sqrt(self.yvar / self.xvar)
+        cnorm_dydx = tf.cast(norm_dydx, tf.float64)
+        scale = self.yvar[..., tf.newaxis, tf.newaxis] / self.xvar
+
+        dydx = cnorm_dydx * tf.sqrt(scale)
 
         return tf.cast(dydx, norm_dydx.dtype)
 
