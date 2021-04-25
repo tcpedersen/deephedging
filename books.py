@@ -123,6 +123,7 @@ class DerivativeBook(object):
 
         return bucket
 
+
     def value(self, time: tf.Tensor, instruments: tf.Tensor,
               numeraire: tf.Tensor):
         """Computes value of book in terms of numeraire for each sample

@@ -488,7 +488,7 @@ class JumpPutCall(Derivative):
         self.theta = theta
         self.intensity = intensity
 
-        self.maxiter = 25
+        self.maxiter = 8
 
 
     def payoff(self, time, instrument, numeraire):
@@ -558,13 +558,13 @@ def black_price(time_to_maturity, spot, strike, drift, volatility, theta):
     forward = spot * tf.math.exp(drift * time_to_maturity)
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
-    m_over_v = m / v
+    m_over_v = tf.where(tf.equal(m, 0.), 0., m / v)
     v_over_2 = v / 2.
 
-    value = theta * (forward * norm_cdf(theta * (m_over_v + v_over_2)) \
-                     - strike * norm_cdf(theta * (m_over_v - v_over_2)))
+    p1 = norm_cdf(theta * (m_over_v + v_over_2), approx=True)
+    p2 = norm_cdf(theta * (m_over_v - v_over_2), approx=True)
 
-    return value
+    return theta * (forward * p1 - strike * p2)
 
 
 def black_delta(time_to_maturity, spot, strike, drift, volatility, theta):
@@ -579,7 +579,9 @@ def black_delta(time_to_maturity, spot, strike, drift, volatility, theta):
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
 
-    raw_delta = theta * inflator * norm_cdf(theta * (m / v + v / 2.))
+    p1 = norm_cdf(theta * (m / v + v / 2.), approx=True)
+
+    raw_delta = theta * inflator * p1
     payoff_delta = theta * tf.cast(theta * (spot - strike) > 0, FLOAT_DTYPE)
     delta = tf.where(tf.equal(v, 0.), payoff_delta, raw_delta)
 

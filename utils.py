@@ -19,11 +19,32 @@ SQRT_TWO = tf.sqrt(2.)
 def norm_pdf(x):
     return ONE_OVER_SQRT_TWO_PI * tf.exp(-0.5 * x * x)
 
-def norm_cdf(x):
-    return special_math.ndtr(x)
+
+def abrahamowitz_stegun_cdf(x):
+    p = 0.2316419
+    c = 0.918938533204672
+
+    b1 = 0.319381530
+    b2 = -0.356563782
+    b3 = 1.781477937
+    b4 = -1.821255978
+    b5 = 1.330274429
+
+    a = tf.abs(x)
+    t = 1 / (1 + a * p)
+    s = ((((b5 * t + b4) * t + b3) * t + b2) * t + b1) * t
+    y = s * tf.exp(-0.5 * x * x - c)
+
+    return tf.where(x < 0, y, 1 - y)
+
+
+def norm_cdf(x, approx=False):
+    return abrahamowitz_stegun_cdf(x) if approx else special_math.ndtr(x)
+
 
 def norm_qdf(x):
     return special_math.ndtri(x)
+
 
 def near_positive_definite(A):
     dtype = tf.float64
