@@ -159,7 +159,8 @@ class LinearFeatureHedge(SemiRecurrentHedge):
         for step in range(timesteps):
             approximator = approximators.LinearFeatureApproximator(
                 instrument_dim=instrument_dim,
-                mappings=[mappings[0]] if step == 0 else mappings)
+                mappings=[mappings[0]] if step == 0 else mappings
+                )
             self._strategy_layers.append(approximator)
 
 
