@@ -1,10 +1,49 @@
 # -*- coding: utf-8 -*-
 import unittest
 import tensorflow as tf
+import books
 
 import hedge_models
 import approximators
 from constants import FLOAT_DTYPE
+
+
+class test_LinearFeatureHedge(unittest.TestCase):
+    def test_cost_gradient(self):
+        timesteps = 3
+        dimension = 2
+        num = 1
+        cost = True
+
+        init_instruments, init_numeraire, book = books.random_put_call_book(
+            timesteps / 250, dimension * 2, dimension, dimension, num)
+        time, instruments, numeraire = book.sample_paths(
+            init_instruments, init_numeraire, int(2**10), timesteps, True)
+
+        martingales = instruments / numeraire
+        features = tf.unstack(book.delta(time, instruments, numeraire) * numeraire,
+                              axis=-1)[:-1]
+        payoff = book.payoff(time, instruments, numeraire)
+
+        model = hedge_models.LinearFeatureHedge(
+            timesteps=timesteps,
+            instrument_dim=book.instrument_dim,
+            mappings=[approximators.IdentityFeatureMap] * (1 + cost)
+            )
+
+        with tf.GradientTape() as tape:
+            value, costs = model([features, martingales], training=True)
+            wealth = value - costs - payoff
+            loss = model.risk_measure(wealth)
+
+        trainable_vars = [model.risk_measure.w] + model.trainable_variables
+        gradient_expected = tape.gradient(loss, trainable_vars)
+        gradient_result, wealth = model.gradient(
+            ([features, martingales, payoff],))
+
+
+        for x1, x2 in zip(gradient_result, gradient_expected):
+            tf.debugging.assert_near(x1, x2)
 
 
 class test_OCERiskMeasure(unittest.TestCase):

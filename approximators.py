@@ -131,15 +131,17 @@ class LinearFeatureApproximator(Approximator):
         super().__init__(instrument_dim, 0)
 
         self.mappings = [mapping() for mapping in mappings]
-        self.bias = self.add_weight(shape=(instrument_dim, ),
-                                    initializer="zeros",
+        self.bias = self.add_weight(name="bias",
+                                    shape=(instrument_dim, ),
+                                    initializer="glorot_uniform", # TODO "zeros"
                                     trainable=True)
 
 
     def build(self, input_shape):
         self.kernels = []
-        for _ in range(len(self.mappings)):
-            kernel = self.add_weight(shape=(self.output_dim, ),
+        for i in range(len(self.mappings)):
+            kernel = self.add_weight(name=f"kernel_{i}",
+                                     shape=(self.output_dim, ),
                                      initializer="glorot_uniform",
                                      trainable=True)
             self.kernels.append(kernel)
