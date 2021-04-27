@@ -54,6 +54,21 @@ class BaseHedge(tf.keras.models.Model, abc.ABC):
         """
 
 
+    def compute_cost(self, martingales, strategy, return_full=False):
+        increment = strategy[..., 1:] - strategy[..., :-1]
+        proportions = self.cost * martingales[..., :-1]
+        costs = tf.reduce_sum(proportions * tf.abs(increment), [1, 2])
+
+        return (costs, increment, proportions) if return_full else costs
+
+
+    def compute_value(self, martingales, strategy, return_full=False):
+        increment = martingales[..., 1:] - martingales[..., :-1]
+        value = tf.reduce_sum(tf.multiply(strategy, increment), [1, 2])
+
+        return (value, increment) if return_full else value
+
+
     def call(self, inputs, training=False):
         """Implementation of call for tf.keras.models.Model.
         The martingales and payoff are assumed to be expressed in terms of the
@@ -69,16 +84,9 @@ class BaseHedge(tf.keras.models.Model, abc.ABC):
         """
         features, martingales = inputs
         strategy = self.strategy(features, training=training)
-
-        increment = martingales[..., 1:] - martingales[..., :-1]
-        value = tf.reduce_sum(tf.multiply(strategy, increment), [1, 2])
-
+        value = self.compute_value(martingales, strategy)
         if self.cost > 0:
-            pad = [[0, 0], [0, 0], [1, 0]]
-            increment = tf.abs(strategy - tf.pad(strategy[..., :-1], pad))
-            proportions = tf.reduce_sum(
-                tf.multiply(martingales[..., :-1], increment), [1, 2])
-            costs = self.cost * proportions
+            costs = self.compute_cost(martingales, strategy)
         else:
             costs = tf.zeros((tf.shape(martingales)[0], ), FLOAT_DTYPE)
 
@@ -167,6 +175,66 @@ class LinearFeatureHedge(SemiRecurrentHedge):
     @property
     def strategy_layers(self) -> list:
         return self._strategy_layers
+
+
+    def gradient(self, data):
+        (x, ) = data
+        features, martingales, payoff = x
+
+        strategy = self.strategy(features, training=True)
+        value, increment = self.compute_value(
+            martingales, strategy, return_full=True)
+        inner = increment
+
+        if self.cost > 0:
+            costs, increment, proportions = self.compute_cost(
+                martingales, strategy, return_full=True)
+            weights = tf.stack([layer.trainable_variables[-1] for layer in \
+                                self.strategy_layers[1:]], -1)
+            weights = tf.pad(weights, [[0, 0], [0, 1]])
+            inner -= proportions * tf.sign(increment) * (weights - 1.0)
+            pad = [[0, 0], [0, 0], [1, 0]]
+            gradcosts = inner * tf.pad(strategy[..., :-1], pad)
+        else:
+            costs = tf.zeros((tf.shape(martingales)[0], ), FLOAT_DTYPE)
+
+        gradbias = inner
+        graddelta = inner * tf.stack(features, -1)
+
+        wealth = value - costs - payoff
+        lossgrad = self.risk_measure.gradient(- wealth - self.risk_measure.w)
+        wgrad = 1.0 - tf.reduce_mean(lossgrad, 0)
+
+        gradients = []
+        extra = [gradcosts] if self.cost > 0 else []
+        for grad in [gradbias, graddelta] + extra:
+                prod = lossgrad[:, tf.newaxis, tf.newaxis] * grad
+                final = self.risk_measure.w - tf.reduce_mean(prod, 0)
+                gradients.append(final)
+
+        return gradients, None
+
+        if self.cost > 0:
+            gradients = gradients[::3] + gradients[1::3] + gradients[2::3]
+            # the cost parameter of the first layer does not exist
+            gradients.pop(2)
+        else:
+            gradients = tf.split(
+                tf.concat(
+                    tf.unstack(
+                        tf.concat(gradients, 0),
+                        axis=-1),
+                    axis=0),
+                len(features) * 2)
+
+        return [wgrad] + gradients, wealth
+
+    def train_step(self, data):
+        gradients, wealth = self.gradient(data)
+        trainable_vars = [self.risk_measure.w] + self.trainable_variables
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+
+        return {"loss": self.risk_measure(wealth)}
 
 
 class NeuralHedge(SemiRecurrentHedge):
@@ -275,6 +343,11 @@ class OCERiskMeasure(abc.ABC):
         """Returns the true value of the estimator."""
 
 
+    @abc.abstractmethod
+    def gradient(self, x: tf.Tensor) -> tf.Tensor:
+        """Returns derivative of loss."""
+
+
 class MeanVariance(OCERiskMeasure):
     def __init__(self, aversion):
         super().__init__()
@@ -289,6 +362,10 @@ class MeanVariance(OCERiskMeasure):
         mean, variance = utils.cast_apply(tf.nn.moments, x, axes=0)
 
         return self.aversion / 2. * variance - mean
+
+
+    def gradient(self, x):
+        return 1.0 + self.aversion * x
 
 
 class ExpectedShortfall(OCERiskMeasure):
