@@ -21,6 +21,7 @@ def norm_pdf(x):
 
 
 def abrahamowitz_stegun_cdf(x):
+    """Approximation of norm_cdf."""
     p = 0.2316419
     c = 0.918938533204672
 
@@ -551,7 +552,7 @@ class HedgeDriver(object):
 
     def plot_scatter_payoff(self, file_name=None):
         self.assert_all_tested()
-        raw_data = self.sample(int(2**18))
+        raw_data = self.sample(int(2**14))
 
         for case in self.testcases:
             plt.figure()
@@ -563,7 +564,7 @@ class HedgeDriver(object):
             alpha = y.mean() - x.mean()
 
             plt.scatter(x, y, s=0.5)
-            plt.plot(x, alpha + x, "--", color="black", dpi=DPI)
+            plt.plot(x, alpha + x, "--", color="black")
 
             plt.show()
 
@@ -631,7 +632,8 @@ def plot_geometric_payoff(driver, size, file_name=None):
         value, _ = driver.evaluate_case(case, raw_data)
 
         plt.figure()
-        plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(), s=0.5)
+        plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(),
+                    s=0.5)
         plt.plot(tf.gather(terminal_spot, key).numpy(),
                  tf.gather(payoff, key).numpy(), color="black")
         if file_name is not None:

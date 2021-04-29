@@ -17,7 +17,8 @@ class DerivativeBook(object):
                  numeraire_simulator: Simulator):
         self.maturity = float(maturity)
         for simulator in [instrument_simulator, numeraire_simulator]:
-            assert issubclass(type(simulator), Simulator)
+            if not issubclass(type(simulator), Simulator):
+                raise TypeError("simulator must be of type Simulator.")
 
         self.instrument_simulator = instrument_simulator
         self.numeraire_simulator = numeraire_simulator
@@ -226,6 +227,73 @@ class DerivativeBook(object):
             )
 
         return tf.exp(rvs)
+
+
+class TradeBook(DerivativeBook):
+    def __init__(self, hedgebook):
+        if not isinstance(hedgebook, DerivativeBook):
+            raise TypeError("hedgebook not of type DerivativeBook.")
+        elif hedgebook.instrument_dim > 1:
+            raise ValueError("multivariate books not supported.")
+
+        super().__init__(
+            hedgebook.maturity,
+            hedgebook.instrument_simulator, # not used
+            hedgebook.numeraire_simulator)  # not used
+        self.hedgebook = hedgebook
+
+
+    @property
+    def book_size(self) -> int:
+        """Number of derivatives in the book."""
+        return len(self.hedgebook.derivatives)
+
+
+    @property
+    def instrument_dim(self) -> int:
+        """Number of underlying risky instruments processes."""
+        return self.hedgebook.instrument_simulator.dimension \
+            + len(self.derivatives)
+
+
+    def add_derivative(self, derivative: derivatives.Derivative):
+        super().add_derivative(derivative, 0, 1)
+
+
+    def value(self, time, instruments, numeraire):
+        main = instruments[:, 0, tf.newaxis, :]
+        return self.hedgebook.value(time, main, numeraire)
+
+
+    def delta(self, time, instruments, numeraire):
+        main = instruments[:, 0, tf.newaxis, :]
+        maindelta = self.hedgebook.delta(time, main, numeraire)
+        marginals = super().link_apply("delta", time, main, numeraire)
+
+        return tf.concat([maindelta, marginals], axis=1)
+
+
+    def payoff(self, time, instruments, numeraire):
+        return self.hedgebook.payoff(time, instruments, numeraire)
+
+
+    def adjoint(self, time, instruments, numeraire):
+        raise NotImplementedError("adjoints not supported.")
+
+
+    def sample_paths(self,
+                     init_instruments: tf.Tensor,
+                     init_numeraire: tf.Tensor,
+                     batch_size: int,
+                     timesteps: int,
+                     risk_neutral: bool,
+                     **kwargs):
+        time, instruments, numeraire = super().sample_paths(
+            init_instruments, init_numeraire, batch_size, timesteps,
+            risk_neutral, **kwargs)
+        tradevalues = super().link_apply("value", time, instruments, numeraire)
+
+        return time, tf.concat([instruments, tradevalues], axis=1), numeraire
 
 
 # =============================================================================

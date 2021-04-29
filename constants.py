@@ -18,8 +18,7 @@ FLOAT_ZERO = tf.constant(0., FLOAT_DTYPE)
 
 # === determine machine epsilon
 FLOAT_DTYPE_EPS = tf.constant(1., FLOAT_DTYPE)
-while FLOAT_DTYPE_EPS + tf.constant(1., FLOAT_DTYPE) != \
-    tf.constant(1., FLOAT_DTYPE):
-        FLOAT_DTYPE_EPS /= 2.
+while not tf.equal(1.0 + FLOAT_DTYPE_EPS, 1.0):
+    FLOAT_DTYPE_EPS /= 2.
 
 DPI = 500

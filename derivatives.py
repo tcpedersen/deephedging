@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
+import numpy as np
 import abc
 import math
 
+import utils
 from utils import norm_cdf, norm_pdf
 from constants import FLOAT_DTYPE, INT_DTYPE
 
@@ -488,7 +490,7 @@ class JumpPutCall(Derivative):
         self.theta = theta
         self.intensity = intensity
 
-        self.maxiter = 8
+        self.maxiter = 6
 
 
     def payoff(self, time, instrument, numeraire):
@@ -561,8 +563,8 @@ def black_price(time_to_maturity, spot, strike, drift, volatility, theta):
     m_over_v = tf.where(tf.equal(m, 0.), 0., m / v)
     v_over_2 = v / 2.
 
-    p1 = norm_cdf(theta * (m_over_v + v_over_2), approx=True)
-    p2 = norm_cdf(theta * (m_over_v - v_over_2), approx=True)
+    p1 = utils.norm_cdf(theta * (m_over_v + v_over_2), approx=True)
+    p2 = utils.norm_cdf(theta * (m_over_v - v_over_2), approx=True)
 
     return theta * (forward * p1 - strike * p2)
 
@@ -579,7 +581,7 @@ def black_delta(time_to_maturity, spot, strike, drift, volatility, theta):
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
 
-    p1 = norm_cdf(theta * (m / v + v / 2.), approx=True)
+    p1 = utils.norm_cdf(theta * (m / v + v / 2.), approx=True)
 
     raw_delta = theta * inflator * p1
     payoff_delta = theta * tf.cast(theta * (spot - strike) > 0, FLOAT_DTYPE)
@@ -587,3 +589,68 @@ def black_delta(time_to_maturity, spot, strike, drift, volatility, theta):
 
     return delta
 
+
+# ==============================================================================
+# === jumps
+def jumpriskratios(tradebook, time, instruments, numeraire):
+    # determine distribution of jumps
+    jumpvol = tradebook.instrument_simulator.jumpvol
+    jumpsize = tradebook.instrument_simulator.jumpsize
+    sobol = tf.math.sobol_sample(1, tradebook.instrument_dim - 1)
+    grid = tf.sort(tf.squeeze(sobol))
+    jumps = tf.math.exp(utils.norm_qdf(grid) * jumpvol + jumpsize)
+
+    # values before jumps
+    hedgevalue = tradebook.value(
+        time, instruments, numeraire)[:, tf.newaxis, tf.newaxis, :]
+    tradevalue = instruments[:, 1:, :][:, tf.newaxis, ...]
+
+    delta = tradebook.delta(time, instruments, numeraire)[:, tf.newaxis, ...]
+    hedgedelta = delta[..., 0, tf.newaxis, :]
+    tradedelta = delta[..., 1:, :]
+
+    jumpinstruments = tf.concat(
+        tf.split(
+            instruments[:, 0, tf.newaxis, :] * jumps[tf.newaxis, :, tf.newaxis],
+            len(jumps),
+            axis=1),
+        axis=0)
+    jumphedgevalue = tf.stack(
+        tf.split(
+            tradebook.hedgebook.value(time, jumpinstruments, numeraire),
+            len(jumps)
+            ),
+        axis=1)[..., tf.newaxis, :]
+    jumptradevalue = tf.stack(
+        tf.split(
+            tradebook.link_apply(
+                "value", time, jumpinstruments, numeraire), len(jumps)),
+        axis=1)
+
+    dhedgevalue = jumphedgevalue - hedgevalue
+    dtradevalue = jumptradevalue - tradevalue
+    dinstruments = tf.stack(tf.split(jumpinstruments, len(jumps)), 1) \
+        - instruments[:, 0, tf.newaxis, :][..., tf.newaxis, :]
+
+    rhs = dhedgevalue - hedgedelta * dinstruments
+
+    traderatios = []
+    instrumentratios = []
+
+    reg = 2**17
+    rcond = reg * len(jumps) * np.finfo(FLOAT_DTYPE.as_numpy_dtype).eps
+    for step in tf.range(len(time) - 1):
+        matrix = dtradevalue[..., step] \
+            - dinstruments[..., step] @ tradedelta[..., step]
+        inv = tf.linalg.pinv(matrix, rcond)
+        ratio = inv @ rhs[..., step]
+
+        e = hedgedelta[..., step] - tradedelta[..., step] @ ratio
+
+        traderatios.append(ratio)
+        instrumentratios.append(e)
+
+    traderatios = tf.concat(traderatios, -1)
+    instrumentratios = tf.concat(instrumentratios, -1)
+
+    return tf.concat([instrumentratios, traderatios], axis=1)

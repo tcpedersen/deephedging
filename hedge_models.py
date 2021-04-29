@@ -342,7 +342,7 @@ class RecurrentHedge(BaseHedge):
 # === risk measures
 class OCERiskMeasure(abc.ABC):
     def __init__(self):
-        self.w = tf.Variable(1.0, trainable=True) # TODO 0.0
+        self.w = tf.Variable(0.0, trainable=True)
 
     def __call__(self, x: tf.Tensor):
         return self.w + tf.reduce_mean(self.loss(-x - self.w), 0)

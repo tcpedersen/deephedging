@@ -133,7 +133,7 @@ class LinearFeatureApproximator(Approximator):
         self.mappings = [mapping() for mapping in mappings]
         self.bias = self.add_weight(name="bias",
                                     shape=(instrument_dim, ),
-                                    initializer="glorot_uniform", # TODO "zeros"
+                                    initializer="zeros",
                                     trainable=True)
 
 
