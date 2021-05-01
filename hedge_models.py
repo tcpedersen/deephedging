@@ -183,6 +183,9 @@ class LinearFeatureHedge(SemiRecurrentHedge):
 
 
     def cost_gradient(self, data):
+        if not self.cost > 0:
+            raise NotImplementedError("does not support no cost.")
+
         (x, ) = data
         features, martingales, payoff = x
 

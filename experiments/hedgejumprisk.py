@@ -94,7 +94,6 @@ def jump_feature_function(raw_data):
 
     return tf.unstack(ratios * raw_data["numeraire"][:-1], axis=-1)
 
-
 driver = utils.HedgeDriver(
     timesteps=timesteps,
     frequency=0, # no need for frequency for non-path dependent derivatives.

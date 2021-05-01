@@ -60,37 +60,39 @@ class test_GBM(unittest.TestCase):
 
 class test_JumpGBM(unittest.TestCase):
     def test_moments(self):
-        maturity = 0.6
-        batch_size, timesteps = 2**20, 2
-        init_instruments, init_numeraire, _ = books.random_empty_book(
-            maturity, 1, 1, 420)
+        for risk_neutral in [True, False]:
+            maturity = 0.6
+            batch_size, timesteps = 2**20, 2
+            init_instruments, init_numeraire, _ = books.random_empty_book(
+                maturity, 1, 1, 420)
 
-        rate, drift, diffusion = 0.02, [0.05], [[0.1]]
-        intensity, jumpsize, jumpvol = 3.4, -0.2, 0.15
+            rate, drift, diffusion = 0.02, [0.05], [[0.1]]
+            intensity, jumpsize, jumpvol = 3.4, -0.2, 0.15
 
-        simulator = simulators.JumpGBM(rate, drift, diffusion,
-                                       intensity, jumpsize, jumpvol)
+            simulator = simulators.JumpGBM(rate, drift, diffusion,
+                                           intensity, jumpsize, jumpvol)
 
-        time = tf.cast(tf.linspace(0., maturity, timesteps + 1), FLOAT_DTYPE)
-        paths = simulator.simulate(
-            time=time,
-            init_state=init_instruments,
-            batch_size=batch_size,
-            risk_neutral=True, # TODO also test for risk_neutral=False
-            use_sobol=True,
-            skip=0)
+            time = tf.cast(tf.linspace(0., maturity, timesteps + 1),
+                           FLOAT_DTYPE)
+            paths = simulator.simulate(
+                time=time,
+                init_state=init_instruments,
+                batch_size=batch_size,
+                risk_neutral=risk_neutral,
+                use_sobol=True,
+                skip=0)
 
-        m = jumpsize + tf.square(jumpvol) / 2.
-        mu = rate - intensity * (tf.math.exp(m) - 1)
-        p = mu - tf.square(simulator.volatility) / 2.
+            m = jumpsize + tf.square(jumpvol) / 2.
+            mu = (rate if risk_neutral else drift) \
+                - intensity * (tf.math.exp(m) - 1)
+            p = mu - tf.square(simulator.volatility) / 2.
 
-        expected_mean = (p + intensity * jumpsize) * time
-        expected_var = (simulator.volatility**2 \
-                        + intensity * (jumpvol**2 + jumpsize**2)) \
-            * time
+            expected_mean = (p + intensity * jumpsize) * time
+            expected_var = (simulator.volatility**2 \
+                            + intensity * (jumpvol**2 + jumpsize**2)) * time
 
-        returns = tf.math.log(paths[:, 0, :] / paths[:, 0, 0, tf.newaxis])
-        mean, variance = tf.nn.moments(returns, 0)
+            returns = tf.math.log(paths[:, 0, :] / paths[:, 0, 0, tf.newaxis])
+            mean, variance = tf.nn.moments(returns, 0)
 
-        tf.debugging.assert_near(mean, expected_mean, atol=1e-3)
-        tf.debugging.assert_near(variance, expected_var, atol=1e-3)
+            tf.debugging.assert_near(mean, expected_mean, atol=1e-3)
+            tf.debugging.assert_near(variance, expected_var, atol=1e-3)

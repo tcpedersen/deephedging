@@ -163,28 +163,25 @@ class JumpGBM(GBM):
         """
         if len(drift) > 1:
             raise NotImplementedError("multivariate not implemented.")
-        super().__init__(rate, drift, diffusion)
-
         self.intensity = float(intensity)
         self.jumpsize = float(jumpsize)
         self.jumpvol = float(jumpvol)
 
         m = self.jumpsize + tf.square(self.jumpvol) / 2.
-        self.comp = self.intensity * (tf.math.exp(m) - 1)
+        self.kappa = tf.math.exp(m) - 1.0
+
+        super().__init__(rate, drift, diffusion)
 
 
     def advance(self, state, rvs, dt, risk_neutral):
-        # TODO make jump distribution depend on risk_neutral
-        if not risk_neutral:
-            raise NotImplementedError("does not support P-measure.")
-
         nonjump = super().advance(state, rvs, dt, risk_neutral)
         poisson = tf.random.poisson(rvs.shape, self.intensity * dt, FLOAT_DTYPE)
         normals = tf.random.normal(rvs.shape, dtype=FLOAT_DTYPE)
         logjumps = poisson * self.jumpsize + tf.sqrt(poisson) \
             * self.jumpvol * normals
+        comp = self.intensity * self.kappa
 
-        return nonjump * tf.exp(logjumps - self.comp * dt)
+        return nonjump * tf.exp(logjumps - comp * dt)
 
 
 class ConstantBankAccount(Simulator):

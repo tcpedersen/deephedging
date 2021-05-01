@@ -521,7 +521,7 @@ class HedgeDriver(object):
 
     def plot_distributions(self, file_name=None, legend_loc="right"):
         self.assert_all_tested()
-        raw_data = self.sample(int(2**18))
+        raw_data = self.sample(int(2**14))
 
         v, c, w = [], [], []
         for case in self.testcases:

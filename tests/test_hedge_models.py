@@ -21,7 +21,8 @@ class test_LinearFeatureHedge(unittest.TestCase):
             init_instruments, init_numeraire, int(2**10), timesteps, True)
 
         martingales = instruments / numeraire
-        features = tf.unstack(book.delta(time, instruments, numeraire) * numeraire,
+        features = tf.unstack(book.delta(time, instruments, numeraire) \
+                              * numeraire,
                               axis=-1)[:-1]
         payoff = book.payoff(time, instruments, numeraire)
 
@@ -30,6 +31,8 @@ class test_LinearFeatureHedge(unittest.TestCase):
             instrument_dim=book.instrument_dim,
             mappings=[approximators.IdentityFeatureMap] * (1 + cost)
             )
+        model.add_cost(1 / 100)
+        model.compile(risk_measure=hedge_models.ExpectedShortfall(0.95))
 
         with tf.GradientTape() as tape:
             value, costs = model([features, martingales], training=True)
@@ -38,7 +41,7 @@ class test_LinearFeatureHedge(unittest.TestCase):
 
         trainable_vars = [model.risk_measure.w] + model.trainable_variables
         gradient_expected = tape.gradient(loss, trainable_vars)
-        gradient_result, wealth = model.gradient(
+        gradient_result, wealth = model.cost_gradient(
             ([features, martingales, payoff],))
 
 
