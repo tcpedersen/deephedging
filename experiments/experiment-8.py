@@ -24,7 +24,7 @@ cost = True if str(sys.argv[1]) == "cost" else False
 train_size, test_size, timesteps = int(2**18), int(2**18), 14
 maturity = timesteps / 250
 rate, drift, diffusion = 0.02, [0.05], [[0.15]]
-intensity, jumpsize, jumpvol = 1.0, -0.2, 0.15
+intensity, jumpsize, jumpvol = 0.25, -0.2, 0.15
 
 time = tf.cast(tf.linspace(0., maturity, timesteps + 1), FLOAT_DTYPE)
 init_instruments = tf.constant([100.], FLOAT_DTYPE)
@@ -49,49 +49,47 @@ hedgebook = books.DerivativeBook(
     maturity, instrument_simulator, numeraire_simulator)
 
 spread = 10
-itm = derivatives.PutCall(
+itm = derivatives.JumpPutCall(
     hedgebook.maturity,
     init_instruments - spread / 2,
     hedgebook.instrument_simulator.rate,
     hedgebook.instrument_simulator.volatility,
-    1)
-atm = derivatives.PutCall(
+    intensity, jumpsize, jumpvol, 1)
+atm = derivatives.JumpPutCall(
     hedgebook.maturity,
     init_instruments,
     hedgebook.instrument_simulator.rate,
     hedgebook.instrument_simulator.volatility,
-    1)
-otm = derivatives.PutCall(
+    intensity, jumpsize, jumpvol, 1)
+otm = derivatives.JumpPutCall(
     hedgebook.maturity,
     init_instruments + spread / 2,
     hedgebook.instrument_simulator.rate,
     hedgebook.instrument_simulator.volatility,
-    1)
+    intensity, jumpsize, jumpvol, 1)
 
 hedgebook.add_derivative(itm, 0, 1)
 hedgebook.add_derivative(atm, 0, -2)
 hedgebook.add_derivative(otm, 0, 1)
 
-
 # ==============================================================================
 # === tradable book
 tradebook = books.TradeBook(hedgebook)
 num_tradables = int(sys.argv[2])
-minm, maxm = 0.05, 0.25
 
-for logmoneyness in tf.linspace(maxm, minm, num_tradables):
-    putstrike = init_instruments * tf.exp(-logmoneyness)
-    put = derivatives.JumpPutCall(
-        maturity, putstrike, rate, instrument_simulator.volatility,
-        intensity, jumpsize, jumpvol, -1)
-    tradebook.add_derivative(put)
+# determine distribution of strikes
+sobol = tf.math.sobol_sample(1, num_tradables)
+grid = tf.sort(tf.squeeze(sobol)) if num_tradables > 1 else tf.squeeze(sobol)
+strikes = init_instruments * tf.math.exp(
+    utils.norm_qdf(grid) * jumpvol + jumpsize)
 
-for logmoneyness in tf.linspace(minm, maxm, num_tradables):
-    callstrike = init_instruments * tf.exp(logmoneyness)
-    call = derivatives.JumpPutCall(
-        maturity, callstrike, rate, instrument_simulator.volatility,
-        intensity, jumpsize, jumpvol, -1)
-    tradebook.add_derivative(call)
+for k in strikes:
+    theta = int(tf.sign(k - init_instruments))
+    assert theta != 0
+    option = derivatives.JumpPutCall(
+        maturity, k, rate, instrument_simulator.volatility,
+        intensity, jumpsize, jumpvol, theta)
+    tradebook.add_derivative(option)
 
 # ==============================================================================
 # === feature functions
@@ -160,7 +158,7 @@ for num in range(num_trials):
         risk_measure=risk_measure(),
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_function="log_martingale",
-        price_type="indifference")
+        price_type="arbitrage")
 
     driver.add_testcase(
         "identity feature map",
@@ -172,7 +170,7 @@ for num in range(num_trials):
         risk_measure=risk_measure(),
         normaliser=None,
         feature_function=jump_feature_function, # use delta?
-        price_type="indifference")
+        price_type="arbitrage")
 
     if driver.cost is not None or not driver.risk_neutral:
         driver.add_liability_free(
@@ -192,7 +190,7 @@ for num in range(num_trials):
     end = perf_counter() - start
     print(f" {end:.3f}s")
 
-file_name = os.path.join(folder_name, fr"tradables-{2 * num_tradables}.txt")
+file_name = os.path.join(folder_name, fr"tradables-{num_tradables}.txt")
 if os.path.exists(file_name):
     os.remove(file_name)
 

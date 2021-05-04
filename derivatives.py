@@ -74,6 +74,10 @@ class PutCall(Derivative):
         self.volatility = tf.convert_to_tensor(volatility, FLOAT_DTYPE)
         self.theta = tf.convert_to_tensor(theta, FLOAT_DTYPE)
 
+        if tf.size(self.volatility) != 1:
+            raise ValueError("volatility is not of dimension 1, "
+                             f"but {tf.size(self.volatility)}.")
+
 
     def payoff(self, time, instrument, numeraire):
         diff = self.theta * (instrument[..., -1] - self.strike)
@@ -481,6 +485,9 @@ class DiscreteGeometricPutCall(Derivative):
 class JumpPutCall(Derivative):
     def __init__(self, maturity, strike, rate, volatility,
                  intensity, jumpsize, jumpvol, theta):
+        if theta not in [-1, 1]:
+            raise ValueError(f"theta = {theta} which is not in {-1, 1}.")
+
         self.maturity = maturity
         self.strike = strike
         self.rate = rate
@@ -508,8 +515,8 @@ class JumpPutCall(Derivative):
 
 
     def mertonsum(self, time, instrument, numeraire, func):
-        # hack: set last value to one to avoid overflow in nrate and nvol.
-        # zero ttm has no influence ofn price nor delta.
+        # HACK set last value to one to avoid overflow in nrate and nvol.
+        # zero ttm has no influence on price nor delta.
         ttm = self.maturity - time
         adjttm = tf.where(tf.equal(ttm, 0.), 1., ttm)
 
@@ -518,7 +525,7 @@ class JumpPutCall(Derivative):
         volsq = self.volatility * self.volatility
         jumpvolsq = self.jumpvol * self.jumpvol
 
-        m = self.jumpsize + jumpvolsq / 2.
+        m = self.jumpsize + jumpvolsq / 2.0
         jumpcomp = self.intensity * (math.exp(m) - 1.)
 
         nfac = [math.factorial(n) for n in range(self.maxiter)]
@@ -539,9 +546,76 @@ class JumpPutCall(Derivative):
     def value(self, time, instrument, numeraire):
         return self.mertonsum(time, instrument, numeraire, black_price)
 
+
     def delta(self, time, instrument, numeraire):
         return self.mertonsum(time, instrument, numeraire, black_delta)
 
+
+class BachelierJumpCall(Derivative):
+    def __init__(self, maturity, strike, volatility,
+                 intensity, jumpsize, jumpvol):
+        self.maturity = maturity
+        self.strike = strike
+        self.rate = 0.0
+        self.volatility = volatility
+        self.jumpsize = jumpsize
+        self.jumpvol = jumpvol
+        self.intensity = intensity
+        self.theta = 1
+
+        self.maxiter = 6
+
+
+    def payoff(self, time, instrument, numeraire):
+        option = PutCall(self.maturity, self.strike, self.rate, self.volatility,
+                         self.theta)
+
+        return option.payoff(time, instrument, numeraire)
+
+
+    def adjoint(self, time, instrument, numeraire):
+        diff = self.theta * (instrument[..., -1, tf.newaxis] - self.strike)
+        itm = tf.cast(diff > 0, FLOAT_DTYPE)
+
+        return self.theta * itm * tf.ones_like(instrument) / numeraire[-1]
+
+
+    def mertonsum(self, time, instrument, numeraire, func):
+        if not tf.reduce_all(tf.equal(numeraire, tf.ones_like(numeraire))):
+            raise NotImplementedError("non-one numeraire not supported.")
+
+        # HACK set last value to one to avoid overflow in nrate and nvol.
+        # zero ttm has no influence on price nor delta.
+        ttm = self.maturity - time
+        adjttm = tf.where(tf.equal(ttm, 0.0), 1.0, ttm)
+
+        value = tf.zeros_like(instrument)
+
+        volsq = self.volatility * self.volatility
+        jumpvolsq = self.jumpvol * self.jumpvol
+
+        nfac = [math.factorial(n) for n in range(self.maxiter)]
+        timeintensity = self.intensity * ttm
+        expterm = tf.math.exp(-timeintensity)
+
+        for n in tf.range(self.maxiter):
+            nfloat = tf.cast(n, FLOAT_DTYPE)
+            nvol = tf.sqrt(volsq + nfloat * jumpvolsq / adjttm)
+            nspot = instrument + self.jumpsize * (nfloat - timeintensity)
+
+            prob = expterm * tf.pow(timeintensity, nfloat) / nfac[n]
+            raw_value = func(ttm, nspot, self.strike, nvol)
+            value += prob * raw_value
+
+        return value / numeraire[-1]
+
+
+    def value(self, time, instrument, numeraire):
+        return self.mertonsum(time, instrument, numeraire, bachelier_price)
+
+
+    def delta(self, time, instrument, numeraire):
+        return self.mertonsum(time, instrument, numeraire, bachelier_delta)
 
 # ==============================================================================
 # === Black Scholes
@@ -560,8 +634,8 @@ def black_price(time_to_maturity, spot, strike, drift, volatility, theta):
     forward = spot * tf.math.exp(drift * time_to_maturity)
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
-    m_over_v = tf.where(tf.equal(m, 0.), 0., m / v)
-    v_over_2 = v / 2.
+    m_over_v = tf.where(tf.equal(m, 0.0), 0.0, m / v)
+    v_over_2 = v / 2.0
 
     p1 = utils.norm_cdf(theta * (m_over_v + v_over_2), approx=True)
     p2 = utils.norm_cdf(theta * (m_over_v - v_over_2), approx=True)
@@ -581,13 +655,39 @@ def black_delta(time_to_maturity, spot, strike, drift, volatility, theta):
     m = tf.math.log(forward / strike)
     v = volatility * tf.math.sqrt(time_to_maturity)
 
-    p1 = utils.norm_cdf(theta * (m / v + v / 2.), approx=True)
+    p1 = utils.norm_cdf(theta * (m / v + v / 2.0), approx=True)
 
     raw_delta = theta * inflator * p1
     payoff_delta = theta * tf.cast(theta * (spot - strike) > 0, FLOAT_DTYPE)
-    delta = tf.where(tf.equal(v, 0.), payoff_delta, raw_delta)
+    delta = tf.where(tf.equal(v, 0.0), payoff_delta, raw_delta)
 
     return delta
+
+
+def bachelier_price(time_to_maturity, spot, strike, volatility):
+    """Returns price in Bachelier's model.
+    Args:
+        see black_price
+    Returns:
+        price: (batch_size, timesteps + 1)
+    """
+    v = volatility * tf.math.sqrt(time_to_maturity)
+    d = (spot - strike) / v
+
+    return v * (d * utils.norm_cdf(d, approx=True) + utils.norm_pdf(d))
+
+
+def bachelier_delta(time_to_maturity, spot, strike, volatility):
+    """Returns delta in Bachelier's model.
+    Args:
+        see black_price
+    Returns:
+        delta: (batch_size, timesteps + 1)
+    """
+    v = volatility * tf.math.sqrt(time_to_maturity)
+    d = (spot - strike) / v
+
+    return utils.norm_cdf(d, approx=True)
 
 
 # ==============================================================================
@@ -596,8 +696,10 @@ def jumpriskratios(tradebook, time, instruments, numeraire):
     # determine distribution of jumps
     jumpvol = tradebook.instrument_simulator.jumpvol
     jumpsize = tradebook.instrument_simulator.jumpsize
-    sobol = tf.math.sobol_sample(1, tradebook.instrument_dim - 1)
-    grid = tf.sort(tf.squeeze(sobol))
+    sobol_dim = tradebook.instrument_dim - 1
+    sobol = tf.math.sobol_sample(1, sobol_dim)
+    grid = tf.sort(tf.squeeze(sobol)) if sobol_dim > 1 \
+        else tf.squeeze(sobol)[tf.newaxis]
     jumps = tf.math.exp(utils.norm_qdf(grid) * jumpvol + jumpsize)
 
     # values before jumps
@@ -632,21 +734,19 @@ def jumpriskratios(tradebook, time, instruments, numeraire):
     dinstruments = tf.stack(tf.split(jumpinstruments, len(jumps)), 1) \
         - instruments[:, 0, tf.newaxis, :][..., tf.newaxis, :]
 
-    rhs = dhedgevalue - hedgedelta * dinstruments
+    hedgereturn = dhedgevalue / dinstruments - hedgedelta
+    tradereturn = dtradevalue / dinstruments - tradedelta
+
+    unstable = tf.abs(tradereturn) < 0.05
+    tradereturn = tf.where(unstable, 0.0, tradereturn)
 
     traderatios = []
     instrumentratios = []
 
-    reg = 2**17
-    rcond = reg * len(jumps) * np.finfo(FLOAT_DTYPE.as_numpy_dtype).eps
     for step in tf.range(len(time) - 1):
-        matrix = dtradevalue[..., step] \
-            - dinstruments[..., step] @ tradedelta[..., step]
-        inv = tf.linalg.pinv(matrix, rcond)
-        ratio = inv @ rhs[..., step]
-
+        inv = tf.linalg.pinv(tradereturn[..., step])
+        ratio = inv @ hedgereturn[..., step]
         e = hedgedelta[..., step] - tradedelta[..., step] @ ratio
-
         traderatios.append(ratio)
         instrumentratios.append(e)
 

@@ -6,7 +6,7 @@ import os
 from time import perf_counter
 
 import utils
-import books
+import random_books
 import gradient_models
 import gradient_driver
 import hedge_models
@@ -17,12 +17,17 @@ tf.get_logger().setLevel('ERROR')
 
 # ==============================================================================
 # === train gradient models
+rate = 0.02
+drift = 0.05
+volatility = 0.2
+spread = 10
+
 warmup_train_size = int(2**13)
 layers = 4
 units = 20
 dimension = int(sys.argv[1])
 
-folder_name = r"figures\markovian-add\experiment-7"
+folder_name = r"results\experiment-7"
 
 number_of_tests = 2**3
 
@@ -34,8 +39,9 @@ for num in range(number_of_tests):
     start = perf_counter()
 
     timesteps = 13
-    init_instruments, init_numeraire, book = books.random_put_call_book(
-        timesteps / 52, dimension, dimension, dimension, num)
+    init_instruments, init_numeraire, book = random_books.random_empty_book(
+        timesteps / 52, dimension, rate, drift, volatility, num)
+    random_books.add_butterfly(init_instruments, book, spread)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,
@@ -47,7 +53,7 @@ for num in range(number_of_tests):
         learning_rate_max=1e-2
         )
 
-    warmup_driver.set_exploration(100., 15.)
+    warmup_driver.set_exploration(100.0, 15.0)
 
     warmup_driver.add_testcase(
         name="twin network",

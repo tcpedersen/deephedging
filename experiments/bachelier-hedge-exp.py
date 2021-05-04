@@ -31,7 +31,7 @@ class BrownianMotion(simulators.GBM):
 
 class BachelierPutCall(derivatives.PutCall):
     def __init__(self, maturity, strike, volatility):
-        super().__init__(maturity, strike, 0., volatility, 1.)
+        super().__init__(maturity, strike, 0.0, volatility, 1.0)
 
 
     def adjoint(self, time, instrument, numeraire):

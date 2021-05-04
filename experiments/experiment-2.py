@@ -10,7 +10,7 @@ import hedge_models
 import utils
 import approximators
 import preprocessing
-import books
+import random_books
 
 # ==============================================================================
 if str(sys.argv[1]) == "cost":
@@ -22,6 +22,10 @@ folder_name = r"results\experiment-2\cost" if cost else r"results\experiment-2\n
 
 # ==============================================================================
 # === hyperparameters
+rate = 0.02
+drift = 0.05
+volatility = 0.4
+
 train_size, test_size, timesteps = int(2**18), int(2**18), 12
 hedge_multiplier = 1
 alpha = 0.95
@@ -44,8 +48,9 @@ for num in range(num_trials):
     print(f"dimension {dimension} at test {num + 1} ".ljust(80, "="), end="")
     start = perf_counter()
 
-    init_instruments, init_numeraire, book = books.random_dga_putcall_book(
-        timesteps / 12, 2 * dimension, dimension, dimension, num)
+    init_instruments, init_numeraire, book = random_books.random_empty_book(
+        timesteps / 12, dimension, rate, drift, volatility, num)
+    random_books.add_dga_calls(init_instruments, book)
 
     driver = utils.HedgeDriver(
         timesteps=timesteps * hedge_multiplier,
@@ -78,7 +83,7 @@ for num in range(num_trials):
         risk_measure=risk_measure(),
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_function="log_martingale",
-        price_type="indifference")
+        price_type="arbitrage")
 
     driver.add_testcase(
         name="identity feature map",
@@ -90,7 +95,7 @@ for num in range(num_trials):
         risk_measure=risk_measure(),
         normaliser=None,
         feature_function="delta",
-        price_type="indifference")
+        price_type="arbitrage")
 
     driver.add_testcase(
         "deep memory network",
@@ -104,7 +109,7 @@ for num in range(num_trials):
         risk_measure=risk_measure(),
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_function="log_martingale",
-        price_type="indifference")
+        price_type="arbitrage")
 
     driver.add_testcase(
         "lstm",
@@ -117,7 +122,7 @@ for num in range(num_trials):
         risk_measure=risk_measure(),
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_function="log_martingale_with_time",
-        price_type="indifference"
+        price_type="arbitrage"
         )
 
 

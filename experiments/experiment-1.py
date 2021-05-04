@@ -9,7 +9,7 @@ import hedge_models
 import utils
 import approximators
 import preprocessing
-import books
+import random_books
 
 # ==============================================================================
 if str(sys.argv[1]) == "cost":
@@ -21,6 +21,11 @@ folder_name = r"results\experiment-1\cost" if cost else r"results\experiment-1\n
 
 # ==============================================================================
 # === hyperparameters
+rate = 0.02
+drift = 0.05
+volatility = 0.2
+spread = 10
+
 train_size, test_size, timesteps = int(2**18), int(2**18), 14
 hedge_multiplier = 1
 alpha = 0.95
@@ -40,8 +45,9 @@ for num in range(num_trials):
     print(f"dimension {dimension} at test {num + 1} ".ljust(80, "="), end="")
     start = perf_counter()
 
-    init_instruments, init_numeraire, book = books.random_put_call_book(
-        timesteps / 250, dimension * 2, dimension, dimension, num)
+    init_instruments, init_numeraire, book = random_books.random_empty_book(
+        timesteps / 250, dimension, rate, drift, volatility, num)
+    random_books.add_butterfly(init_instruments, book, spread)
 
     driver = utils.HedgeDriver(
         timesteps=timesteps * hedge_multiplier,
@@ -74,7 +80,7 @@ for num in range(num_trials):
         risk_measure=hedge_models.ExpectedShortfall(alpha),
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_function="log_martingale",
-        price_type="indifference")
+        price_type="arbitrage")
 
     driver.add_testcase(
         "identity feature map",
@@ -86,7 +92,7 @@ for num in range(num_trials):
         risk_measure=hedge_models.ExpectedShortfall(alpha),
         normaliser=None,
         feature_function="delta",
-        price_type="indifference")
+        price_type="arbitrage")
 
     if driver.cost is not None or not driver.risk_neutral:
         driver.add_liability_free(

@@ -150,6 +150,14 @@ class GBM(Simulator):
         return state * rvs
 
 
+    def moment(self, init_state, maturity, risk_neutral, n):
+        drift = self.rate if risk_neutral else self.drift
+        m = (drift - self.volatility * self.volatility / 2.) * maturity
+        vsq = self.volatility**2 * maturity
+
+        return tf.pow(init_state, n) * tf.exp(n * m + n**2 * vsq / 2.0)
+
+
 class JumpGBM(GBM):
     def __init__(self, rate, drift, diffusion, intensity, jumpsize, jumpvol):
         """Initialisation of GBM.
@@ -182,6 +190,18 @@ class JumpGBM(GBM):
         comp = self.intensity * self.kappa
 
         return nonjump * tf.exp(logjumps - comp * dt)
+
+
+    def logcumulants(self, init_state, maturity, risk_neutral):
+        drift = self.rate if risk_neutral else self.drift
+
+        p = drift - tf.square(self.volatility) / 2.0
+        meanreturn = (p + self.intensity * (self.jumpsize - self.kappa)) \
+            * maturity
+        varreturn = (self.volatility**2 + self.intensity \
+                     * (self.jumpvol**2 + self.jumpsize**2)) * maturity
+
+        return meanreturn, varreturn
 
 
 class ConstantBankAccount(Simulator):

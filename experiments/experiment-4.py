@@ -8,7 +8,7 @@ from time import perf_counter
 
 import gradient_models
 import gradient_driver
-import books
+import random_books
 
 warmup_train_size_twin = int(2**13)
 warmup_train_size_value = int(2**13)
@@ -19,10 +19,13 @@ units = 20
 
 dimension = int(sys.argv[1])
 
-folder_name = r"figures\markovian-add\experiment-4"
+folder_name = r"results\experiment-4"
 
 # ==============================================================================
 # === train gradient models
+rate = 0.02
+drift = 0.05
+volatility = 0.2
 
 number_of_tests = 2**3
 test_drivers = []
@@ -31,8 +34,9 @@ for num in range(number_of_tests):
     print(f"dimension {dimension} at test {num + 1} ".ljust(80, "="), end="")
     start = perf_counter()
 
-    init_instruments, init_numeraire, book = books.random_mean_putcall_book(
-        13 / 52, dimension, num)
+    init_instruments, init_numeraire, book = random_books.random_empty_book(
+        13 / 52, dimension, rate, drift, volatility, num)
+    random_books.add_calls(init_instruments, book)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,

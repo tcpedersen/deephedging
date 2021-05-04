@@ -7,7 +7,7 @@ from time import perf_counter
 
 import utils
 import derivatives
-import books
+import random_books
 import gradient_models
 import gradient_driver
 import hedge_models
@@ -15,8 +15,8 @@ import hedge_models
 tf.get_logger().setLevel('ERROR')
 
 timesteps = 13
-init_instruments, init_numeraire, book = books.simple_empty_book(
-    timesteps / 52, 100, 0., 0.05, 0.2)
+init_instruments, init_numeraire, book = random_books.random_empty_book(
+    timesteps / 52, 1, 0.02, 0.05, 0.2)
 init_numeraire = tf.ones_like(init_numeraire)
 
 spread = 10
@@ -47,9 +47,9 @@ book.add_derivative(otm, 0, 1)
 # === train gradient models
 warmup_train_size = int(sys.argv[1])
 
-folder_name = r"figures\markovian-add\experiment-5"
+folder_name = r"results\experiment-5"
 
-number_of_tests = 1 # too slow to run multiple times
+number_of_tests = 8 # too slow to run multiple times?
 
 test_warmup_drivers = []
 test_hedge_drivers = []
@@ -70,7 +70,7 @@ for num in range(number_of_tests):
 
     warmup_driver.set_exploration(100., 15.)
 
-    for layers in [2, 3, 4, 5]:
+    for layers in [2, 4]:
         for units in [20]:
             warmup_driver.add_testcase(
                 name=f"value network layers {layers}",

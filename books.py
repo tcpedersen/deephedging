@@ -1,23 +1,21 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-import tensorflow_probability as tfp
-
-from tensorflow.random import uniform
 
 import derivatives
+import simulators
+
 from constants import FLOAT_DTYPE, INT_DTYPE
-from simulators import Simulator, GBM, ConstantBankAccount
 
 # ==============================================================================
 # === Base
 class DerivativeBook(object):
     def __init__(self,
                  maturity: float,
-                 instrument_simulator: Simulator,
-                 numeraire_simulator: Simulator):
+                 instrument_simulator: simulators.Simulator,
+                 numeraire_simulator: simulators.Simulator):
         self.maturity = float(maturity)
         for simulator in [instrument_simulator, numeraire_simulator]:
-            if not issubclass(type(simulator), Simulator):
+            if not issubclass(type(simulator), simulators.Simulator):
                 raise TypeError("simulator must be of type Simulator.")
 
         self.instrument_simulator = instrument_simulator
@@ -294,230 +292,3 @@ class TradeBook(DerivativeBook):
         tradevalues = super().link_apply("value", time, instruments, numeraire)
 
         return time, tf.concat([instruments, tradevalues], axis=1), numeraire
-
-
-# =============================================================================
-# === random generation of books
-def simple_empty_book(
-        maturity: float,
-        spot: float,
-        rate: float,
-        drift: float,
-        volatility: float):
-    init_instruments = tf.constant((spot, ), FLOAT_DTYPE)
-    init_numeraire = tf.constant((1., ), FLOAT_DTYPE)
-
-    instrument_simulator = GBM(rate, drift, [[volatility]])
-    numeraire_simulator = ConstantBankAccount(rate)
-
-    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
-
-    return init_instruments, init_numeraire, book
-
-def random_empty_book(
-        maturity: float,
-        instrument_dim: int,
-        num_brownian_motions: int,
-        seed: int,
-        sign_prob: float=0.5):
-    tf.random.set_seed(seed)
-
-    maturity = float(maturity)
-    drift = tf.random.uniform((instrument_dim, ), 0.05, 0.1, dtype=FLOAT_DTYPE)
-    rate = tf.random.uniform((1, ), 0.0, 0.05, dtype=FLOAT_DTYPE)
-
-    scale = tf.cast(tf.sqrt(float(num_brownian_motions)), FLOAT_DTYPE)
-    size = (instrument_dim, num_brownian_motions)
-    diffusion = random_sign(size, sign_prob) \
-        * tf.random.uniform(size, 0.15 / scale, 0.4 / scale, FLOAT_DTYPE)
-
-    init_instruments = uniform((instrument_dim, ), 95, 105, FLOAT_DTYPE)
-    init_numeraire = uniform((1, ), 0.75, 1.25, FLOAT_DTYPE)
-
-    instrument_simulator = GBM(rate, drift, diffusion)
-    numeraire_simulator = ConstantBankAccount(rate)
-    book = DerivativeBook(maturity, instrument_simulator, numeraire_simulator)
-
-    return init_instruments, init_numeraire, book
-
-
-def random_linker(book_size, instrument_dim):
-    if instrument_dim  > 1:
-        one_of_each = tf.range(instrument_dim)
-        other_random = tf.random.uniform((book_size - instrument_dim, ),
-                                         0, instrument_dim - 1, INT_DTYPE)
-        return tf.random.shuffle(tf.concat([one_of_each, other_random], 0))
-    else:
-        return tf.convert_to_tensor((0, ), INT_DTYPE)
-
-
-def random_sign(size, p):
-    unscaled = tfp.distributions.Binomial(1, probs=p).sample(size)
-
-    return tf.cast(2 * unscaled - 1, FLOAT_DTYPE)
-
-
-def pct_interval(x, p):
-    return (1 - p) * x, (1 + p) * x
-
-
-def random_put_call_book(
-        maturity: float,
-        book_size: int,
-        instrument_dim: int,
-        num_brownian_motions: int,
-        seed: int,
-        **kwargs):
-    assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
-
-    init_instruments, init_numeraire, book = random_empty_book(
-        maturity, instrument_dim, num_brownian_motions, seed)
-
-    strike = uniform((book_size, ), 95, 105, FLOAT_DTYPE)
-    put_call = random_sign(book_size, 1 / 2)
-    exposure = random_sign(book_size, 3 / 4)
-
-    linker = random_linker(book_size, instrument_dim)
-
-    for idx, link in enumerate(linker):
-        vol = book.instrument_simulator.volatility[link]
-        derivative = derivatives.PutCall(
-            maturity,
-            strike[idx],
-            book.numeraire_simulator.rate,
-            vol,
-            put_call[idx]
-            )
-        book.add_derivative(derivative, link, exposure[idx])
-
-    return init_instruments, init_numeraire, book
-
-
-def simple_put_call_book(maturity, spot, strike, rate, drift, sigma, theta):
-    init_instruments, init_numeraire, book = simple_empty_book(
-        maturity, spot, rate, drift, sigma)
-
-    derivative = derivatives.PutCall(maturity, strike, rate, sigma, theta)
-    book.add_derivative(derivative, 0, 1)
-
-    return init_instruments, init_numeraire, book
-
-
-def random_barrier_book(
-        maturity: float,
-        book_size: int,
-        instrument_dim: int,
-        num_brownian_motions: int,
-        seed: int):
-    assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
-
-    init_instruments, init_numeraire, book = random_empty_book(
-        maturity, instrument_dim, num_brownian_motions, seed)
-
-    strike = uniform((book_size, ), 95, 105, FLOAT_DTYPE)
-    exposure = random_sign(book_size, 3 / 4)
-
-    outin = random_sign(book_size, 1 / 2)
-    updown = random_sign(book_size, 1 / 2)
-
-    linker = random_linker(book_size, instrument_dim)
-
-    for idx, link in enumerate(linker):
-        call_min_barrier = init_instruments[link] - 10
-        call_max_barrier = init_instruments[link] + 10
-        if outin[idx] == 1:
-            if updown[idx] == 1:
-                lower = max(strike[idx], init_instruments[link]) + 1
-                upper = call_max_barrier
-            elif updown[idx] == -1:
-                lower = call_min_barrier
-                upper = min(strike[idx], init_instruments[link]) - 1
-        elif outin[idx] == -1:
-            if updown[idx] == 1:
-                lower = max(strike[idx], init_instruments[link]) + 1
-                upper = call_max_barrier
-            elif updown[idx] == -1:
-                lower = call_min_barrier
-                upper = init_instruments[link]
-
-        barrier = uniform((1, ), lower, upper, FLOAT_DTYPE)
-
-        vol = book.instrument_simulator.volatility[link]
-        derivative = derivatives.BarrierCall(
-            maturity, strike[idx], barrier, book.numeraire_simulator.rate,
-            vol, outin[idx], updown[idx])
-        book.add_derivative(derivative, link, exposure[idx])
-
-    return init_instruments, init_numeraire, book
-
-
-def simple_barrier_book(maturity, spot, strike, barrier, rate, drift, vol,
-                        outin, updown):
-    init_instruments, init_numeraire, book = simple_empty_book(
-        maturity, spot, rate, drift, vol)
-
-    derivative = derivatives.BarrierCall(
-        maturity, strike, barrier, rate, vol, outin, updown)
-    book.add_derivative(derivative, 0, 1)
-
-    return init_instruments, init_numeraire, book
-
-
-def random_dga_putcall_book(
-        maturity: float,
-        book_size: int,
-        instrument_dim: int,
-        num_brownian_motions: int,
-        seed: int,
-        **kwargs):
-    assert book_size >= instrument_dim, "book_size smaller than instrument_dim."
-
-    init_instruments, init_numeraire, book = random_empty_book(
-        maturity, instrument_dim, num_brownian_motions, seed, **kwargs)
-
-    put_call = random_sign(book_size, 1 / 2)
-    exposure = random_sign(book_size, 3 / 4)
-
-    linker = random_linker(book_size, instrument_dim)
-
-    for idx, link in enumerate(linker):
-        expected = init_instruments[link]**maturity
-        strike = uniform((1, ), *pct_interval(expected, 0.1), FLOAT_DTYPE)
-        vol = book.instrument_simulator.volatility[link]
-        derivative = derivatives.DiscreteGeometricPutCall(
-            maturity, strike, book.numeraire_simulator.rate, vol, put_call[idx])
-        book.add_derivative(derivative, link, exposure[idx])
-
-    return init_instruments, init_numeraire, book
-
-
-def simple_dga_putcall_book(maturity, spot, strike, rate, drift, sigma, theta):
-    init_instruments, init_numeraire, book = simple_empty_book(
-        maturity, spot, rate, drift, sigma)
-
-    derivative = derivatives.DiscreteGeometricPutCall(
-        maturity, strike, rate, sigma, theta)
-    book.add_derivative(derivative, 0, 1)
-
-    return init_instruments, init_numeraire, book
-
-
-def random_mean_putcall_book(maturity, dimension, seed):
-    init_instruments, init_numeraire, book = random_empty_book(
-        maturity, dimension, dimension, seed)
-
-    init_instruments = tf.ones_like(init_instruments) * 100.
-    init_numeraire = tf.ones_like(init_numeraire)
-    book.numeraire_simulator.rate = 0.
-
-    for dim in tf.range(dimension):
-        derivative = derivatives.PutCall(
-            maturity,
-            init_instruments[dim],
-            book.numeraire_simulator.rate,
-            book.instrument_simulator.volatility[dim],
-            1
-            )
-        book.add_derivative(derivative, dim, 1 / dimension)
-
-    return init_instruments, init_numeraire, book

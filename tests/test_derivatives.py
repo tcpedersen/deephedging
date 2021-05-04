@@ -440,20 +440,20 @@ class test_JumpPutCall(unittest.TestCase):
         numeraire = tf.math.exp(rate * time)
 
         price_expected = tf.constant([
-            [16.8930892792925, 21.1647925209847, 1.],
-            [16.8930892792925, 31.7191011838734, 0.]
+            [16.8930892792925, 21.1647925209847, 1.0],
+            [16.8930892792925, 31.7191011838734, 0.0]
             ]) / numeraire
 
         delta_expected = tf.constant([
-            [0.573198330210462, 0.900506824015922, 1.],
-            [0.573198330210462, 0.990415604060569, 0.]
+            [0.573198330210462, 0.900506824015922, 1.0],
+            [0.573198330210462, 0.990415604060569, 0.0]
             ]) / numeraire
 
         payoff_expected = price_expected[..., -1]
 
         adjoint_expected = tf.constant([
             [0.91, 91 / 110, 1.],
-            [0., 0., 0.]
+            [0.0, 0.0, 0.0]
             ]) / numeraire[-1]
 
         price_result = putcall.value(time, instrument, numeraire)

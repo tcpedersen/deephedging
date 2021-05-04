@@ -62,7 +62,7 @@ class test_JumpGBM(unittest.TestCase):
     def test_moments(self):
         for risk_neutral in [True, False]:
             maturity = 0.6
-            batch_size, timesteps = 2**20, 2
+            batch_size, timesteps = 2**24, 2
             init_instruments, init_numeraire, _ = books.random_empty_book(
                 maturity, 1, 1, 420)
 

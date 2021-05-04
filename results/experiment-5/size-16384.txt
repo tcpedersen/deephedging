@@ -1,0 +1,254 @@
+================================================================================
+=== value network layers 2
+train_time
+37.2263669
+
+
+================================================================================
+=== twin network layers 2
+train_time
+24.212054700000003
+
+
+================================================================================
+=== delta network layers 2
+train_time
+31.6043181
+
+
+================================================================================
+=== value network layers 3
+train_time
+51.33509040000001
+
+
+================================================================================
+=== twin network layers 3
+train_time
+39.45389610000001
+
+
+================================================================================
+=== delta network layers 3
+train_time
+40.6770545
+
+
+================================================================================
+=== value network layers 4
+train_time
+67.53035879999999
+
+
+================================================================================
+=== twin network layers 4
+train_time
+76.06150659999997
+
+
+================================================================================
+=== delta network layers 4
+train_time
+57.6866407
+
+
+================================================================================
+=== value network layers 5
+train_time
+84.73373720000001
+
+
+================================================================================
+=== twin network layers 5
+train_time
+100.38663770000005
+
+
+================================================================================
+=== delta network layers 5
+train_time
+73.09546890000001
+
+
+================================================================================
+=== continuous-time
+test_risk
+3.2574124
+test_wealth_with_price_abs_mean
+0.65403354
+test_wealth_with_price_variance
+0.88294405
+price
+0.97654533
+train_time
+0.34164239999995516
+
+
+================================================================================
+=== value network layers 2
+test_risk
+3.4956965
+test_wealth_with_price_abs_mean
+0.72674006
+test_wealth_with_price_variance
+0.99375504
+price
+0.97654533
+train_time
+0.2892655000000559
+
+
+================================================================================
+=== twin network layers 2
+test_risk
+3.2759128
+test_wealth_with_price_abs_mean
+0.67070717
+test_wealth_with_price_variance
+0.90110165
+price
+0.97654533
+train_time
+0.2847961000001078
+
+
+================================================================================
+=== delta network layers 2
+test_risk
+3.2097306
+test_wealth_with_price_abs_mean
+0.6712282
+test_wealth_with_price_variance
+0.90892357
+price
+0.97654533
+train_time
+0.3123938999999609
+
+
+================================================================================
+=== value network layers 3
+test_risk
+3.2561748
+test_wealth_with_price_abs_mean
+0.6598947
+test_wealth_with_price_variance
+0.89538336
+price
+0.97654533
+train_time
+0.3165642999999818
+
+
+================================================================================
+=== twin network layers 3
+test_risk
+3.2566884
+test_wealth_with_price_abs_mean
+0.6578775
+test_wealth_with_price_variance
+0.8885973
+price
+0.97654533
+train_time
+0.3038029000000506
+
+
+================================================================================
+=== delta network layers 3
+test_risk
+3.2101934
+test_wealth_with_price_abs_mean
+0.6738942
+test_wealth_with_price_variance
+0.9149584
+price
+0.97654533
+train_time
+0.8863943999999719
+
+
+================================================================================
+=== value network layers 4
+test_risk
+3.3383796
+test_wealth_with_price_abs_mean
+0.6655887
+test_wealth_with_price_variance
+0.8992876
+price
+0.97654533
+train_time
+0.28193420000002334
+
+
+================================================================================
+=== twin network layers 4
+test_risk
+3.2729456
+test_wealth_with_price_abs_mean
+0.65741724
+test_wealth_with_price_variance
+0.8876757
+price
+0.97654533
+train_time
+0.28496309999991354
+
+
+================================================================================
+=== delta network layers 4
+test_risk
+3.208787
+test_wealth_with_price_abs_mean
+0.6686897
+test_wealth_with_price_variance
+0.907722
+price
+0.97654533
+train_time
+0.2814275999999154
+
+
+================================================================================
+=== value network layers 5
+test_risk
+3.3287954
+test_wealth_with_price_abs_mean
+0.66641366
+test_wealth_with_price_variance
+0.89921546
+price
+0.97654533
+train_time
+0.27682260000005954
+
+
+================================================================================
+=== twin network layers 5
+test_risk
+3.2719588
+test_wealth_with_price_abs_mean
+0.65951717
+test_wealth_with_price_variance
+0.8884678
+price
+0.97654533
+train_time
+0.27560219999998026
+
+
+================================================================================
+=== delta network layers 5
+test_risk
+3.238487
+test_wealth_with_price_abs_mean
+0.6821916
+test_wealth_with_price_variance
+0.9185602
+price
+0.97654533
+train_time
+0.28385000000002947
+
+
