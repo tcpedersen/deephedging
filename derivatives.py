@@ -497,6 +497,8 @@ class JumpPutCall(Derivative):
         self.theta = theta
         self.intensity = intensity
 
+        self.kappa = tf.exp(self.jumpsize + self.jumpvol**2 / 2.0) - 1.0
+
         self.maxiter = 6
 
 
@@ -617,6 +619,23 @@ class BachelierJumpCall(Derivative):
     def delta(self, time, instrument, numeraire):
         return self.mertonsum(time, instrument, numeraire, bachelier_delta)
 
+
+    @classmethod
+    def from_jumpputcall(cls, instance, init_instrument):
+        volatility = tf.exp(-instance.intensity * instance.kappa) \
+            * init_instrument * instance.volatility
+        jumpsize = instance.kappa * init_instrument
+        jumpvol = (1 + instance.kappa) * instance.jumpvol * init_instrument
+
+        return cls(
+            maturity=instance.maturity,
+            strike=instance.strike,
+            volatility=volatility,
+            intensity=instance.intensity,
+            jumpsize=jumpsize,
+            jumpvol=jumpvol
+        )
+
 # ==============================================================================
 # === Black Scholes
 def black_price(time_to_maturity, spot, strike, drift, volatility, theta):
@@ -673,8 +692,10 @@ def bachelier_price(time_to_maturity, spot, strike, volatility):
     """
     v = volatility * tf.math.sqrt(time_to_maturity)
     d = (spot - strike) / v
+    price = v * (d * utils.norm_cdf(d, approx=True) + utils.norm_pdf(d))
 
-    return v * (d * utils.norm_cdf(d, approx=True) + utils.norm_pdf(d))
+    # due to no interest rate, v=0 implies S_T=S_t a.s.
+    return tf.where(tf.equal(v, 0.0), tf.maximum(spot - strike, 0.0), price)
 
 
 def bachelier_delta(time_to_maturity, spot, strike, volatility):

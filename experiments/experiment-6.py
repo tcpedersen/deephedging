@@ -17,7 +17,7 @@ tf.get_logger().setLevel('ERROR')
 # === train gradient models
 rate = 0.02
 drift = 0.05
-volatility = 0.4
+volatility = 0.2
 
 warmup_train_size_twin = int(2**13)
 warmup_train_size_value = int(2**13)
@@ -41,7 +41,7 @@ for num in range(number_of_tests):
     timesteps = 13
     init_instruments, init_numeraire, book = random_books.random_empty_book(
         timesteps / 52, dimension, rate, drift, volatility, num)
-    random_books.add_dga_calls(init_instruments, book)
+    random_books.add_calls(init_instruments, book)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,

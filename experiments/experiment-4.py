@@ -36,7 +36,8 @@ for num in range(number_of_tests):
 
     init_instruments, init_numeraire, book = random_books.random_empty_book(
         13 / 52, dimension, rate, drift, volatility, num)
-    random_books.add_calls(init_instruments, book)
+    random_books.add_calls(init_instruments, init_numeraire, book,
+                           normalise=True)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,

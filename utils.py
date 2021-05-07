@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
+from functools import partial
 from time import perf_counter
 from tensorflow_probability.python.internal import special_math
 
@@ -109,7 +110,8 @@ class HedgeDriver(object):
         self.frequency = frequency
         self.init_instruments = init_instruments
         self.init_numeraire = init_numeraire
-        self.book = book
+        self.book = book # train book
+        self.testbook = None
         self.cost = cost
         self.risk_neutral = risk_neutral
 
@@ -135,8 +137,17 @@ class HedgeDriver(object):
         self.liability_free = None
 
 
-    def sample(self, size, metrics=None, **kwargs):
-        time, instruments, numeraire = self.book.sample_paths(
+    def sample(self, size, metrics=None, training=False, **kwargs):
+        if training and self.testbook is not None:
+            sampler = partial(
+                self.testbook.sample_paths,
+                exploring_loc=self.init_instruments,
+                exploring_scale=15.0
+                )
+        else:
+            sampler = self.book.sample_paths
+
+        time, instruments, numeraire = sampler(
             self.init_instruments,
             self.init_numeraire,
             size,
@@ -163,6 +174,12 @@ class HedgeDriver(object):
         return sample
 
 
+    def add_testbook(self, book):
+        if self.testbook is not None:
+            raise ValueError("test book already exist.")
+        self.testbook = book
+
+
     def _translate_feature_function(self, feature_function_name):
         if not isinstance(feature_function_name, str):
             raise TypeError("feature_function_name must of type str, not ",
@@ -178,6 +195,7 @@ class HedgeDriver(object):
             raise ValueError("feature_function_name: ",
                              f"'{feature_function_name}' ",
                              "is not valid.")
+
 
     def validate_price_type(self, price_type):
         valid_price_types = ["indifference", "arbitrage", "constant"]
@@ -269,13 +287,13 @@ class HedgeDriver(object):
         return tf.unstack(tensor[..., :-1], self.timesteps, -1)
 
 
-    def _log_martingale(self, raw_data):
+    def _log_martingale(self, raw_data, **kwargs):
         tensor = tf.math.log(raw_data["instruments"] / raw_data["numeraire"])
 
         return self._split_by_timesteps(tensor)
 
 
-    def _log_martingale_with_time(self, raw_data):
+    def _log_martingale_with_time(self, raw_data, **kwargs):
         time = raw_data["time"]
         lst = self._log_martingale(raw_data)
         pad = [[0, 0], [1, 0]]
@@ -283,8 +301,9 @@ class HedgeDriver(object):
         return [tf.pad(x, pad, constant_values=t) for t, x in zip(time, lst)]
 
 
-    def _undiscounted_delta(self, raw_data):
+    def _undiscounted_delta(self, raw_data, **kwargs):
         tensor = raw_data["delta"] * raw_data["numeraire"]
+
         return self._split_by_timesteps(tensor)
 
 
@@ -343,7 +362,7 @@ class HedgeDriver(object):
             risk_measure=case["risk_measure"],
             optimizer=optimizer)
 
-        case["model"](input_data[:-1]) # skip overhead time in build
+        case["model"](input_data[:-1]) # try to skip overhead time in build
 
         start = perf_counter()
         case["history"] = case["model"].fit(
@@ -365,7 +384,7 @@ class HedgeDriver(object):
 
 
     def train(self, sample_size, epochs, batch_size):
-        raw_data = self.sample(sample_size)
+        raw_data = self.sample(sample_size, training=True)
 
         for case in self.testcases:
             input_data = self.get_input(case, raw_data)
@@ -374,7 +393,8 @@ class HedgeDriver(object):
                             epochs=epochs)
 
         if self.liability_free is not None:
-            input_data = self.get_input(self.liability_free, raw_data)
+            input_data = self.get_input(
+                self.liability_free, raw_data)
             input_data[-1] = tf.zeros_like(input_data[-1])
             self.train_case(self.liability_free, input_data,
                             batch_size=batch_size,
@@ -612,6 +632,9 @@ def plot_markovian_payoff(driver, size, price, file_name=None):
         plt.scatter(terminal_spot.numpy(), (value + price).numpy(), s=0.5)
         plt.plot(tf.gather(terminal_spot, key).numpy(),
                  tf.gather(payoff, key).numpy(), color="black")
+        plt.xlabel("terminal value of instrument process")
+        plt.ylabel("terminal value of portfolio")
+
         if file_name is not None:
             # must be png, as eps/pdf too heavy
             plt.savefig(fr"{file_name}-{case['name']}.png", dpi=DPI)
@@ -619,7 +642,7 @@ def plot_markovian_payoff(driver, size, price, file_name=None):
             plt.show()
 
 
-def plot_geometric_payoff(driver, size, file_name=None):
+def plot_geometric_payoff(driver, size, price, file_name=None):
     raw_data = driver.sample(size)
     payoff = raw_data["payoff"]
 
@@ -632,10 +655,14 @@ def plot_geometric_payoff(driver, size, file_name=None):
         value, _ = driver.evaluate_case(case, raw_data)
 
         plt.figure()
-        plt.scatter(terminal_spot.numpy(), (value + case["price"]).numpy(),
+        plt.scatter(terminal_spot.numpy(), (value + price).numpy(),
                     s=0.5)
         plt.plot(tf.gather(terminal_spot, key).numpy(),
                  tf.gather(payoff, key).numpy(), color="black")
+
+        plt.xlabel("terminal value of geometric average of instrument process")
+        plt.ylabel("terminal value of portfolio")
+
         if file_name is not None:
             # must be png, as eps/pdf too heavy
             plt.savefig(fr"{file_name}-{case['name']}.png", dpi=DPI)
@@ -693,6 +720,8 @@ def plot_univariate_barrier_payoff(driver, size, price, file_name=None):
             # plt.xlim(*xlim)
             plt.scatter(x, y2.numpy(), s=0.5)
             plt.plot(x, y1.numpy(), color="black")
+            plt.xlabel("terminal value of instrument process")
+            plt.ylabel("terminal value of portfolio")
 
             if file_name is not None:
                 append = "crossed" if idx == 0 else "non-crossed"

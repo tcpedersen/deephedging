@@ -41,7 +41,8 @@ for num in range(number_of_tests):
     timesteps = 13
     init_instruments, init_numeraire, book = random_books.random_empty_book(
         timesteps / 52, dimension, rate, drift, volatility, num)
-    random_books.add_butterfly(init_instruments, book, spread)
+    random_books.add_butterfly(
+        init_instruments, init_numeraire, book, spread, normalise=True)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,
@@ -112,7 +113,7 @@ for num in range(number_of_tests):
             instrument_dim=book.instrument_dim,
             internal_dim=0,
             num_layers=4,
-            num_units=10,
+            num_units=15, # changed to 10 since last test
             activation=tf.keras.activations.softplus),
         risk_measure=hedge_models.ExpectedShortfall(alpha),
         normaliser=preprocessing.MeanVarianceNormaliser(),
@@ -142,7 +143,7 @@ for num in range(number_of_tests):
     print(f" {end:.3f}s")
 
 
-file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
+file_name = os.path.join(folder_name, fr"dimension-{dimension}-extra.txt") # TODO remove extra
 if os.path.exists(file_name):
     os.remove(file_name)
 
@@ -154,7 +155,11 @@ utils.driver_data_dumb(
 
 utils.driver_data_dumb(
     test_hedge_drivers,
-    ["test_risk", "test_wealth_with_price_abs_mean",
-     "test_wealth_with_price_variance", "price", "train_time"],
+    ["train_risk", "test_risk",
+     "test_mean_value", "test_mean_abs_value", "test_variance_value",
+     "test_mean_costs", "test_mean_abs_costs", "test_variance_costs",
+     "test_mean_wealth", "test_mean_abs_wealth", "test_variance_wealth",
+     "test_wealth_with_price_abs_mean", "test_wealth_with_price_variance",
+     "price", "train_time"],
     file_name
     )

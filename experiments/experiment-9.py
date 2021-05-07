@@ -12,7 +12,6 @@ import derivatives
 import utils
 import hedge_models
 import preprocessing
-import approximators
 
 from constants import FLOAT_DTYPE
 
@@ -20,18 +19,18 @@ tf.get_logger().setLevel('ERROR')
 
 # ==============================================================================
 # === parameters
-cost = True if str(sys.argv[1]) == "cost" else False
+cost = True # TODO must fix drift first
 train_size, test_size, timesteps = int(2**18), int(2**18), 14
 maturity = timesteps / 250
-rate, drift, diffusion = 0.02, [0.05], [[0.15]]
+rate, drift, diffusion = 0.0, [0.0], [[0.15]]
 intensity, jumpsize, jumpvol = 0.25, -0.2, 0.15
 
 time = tf.cast(tf.linspace(0.0, maturity, timesteps + 1), FLOAT_DTYPE)
 init_instruments = tf.constant([100.], FLOAT_DTYPE)
 init_numeraire = tf.constant([1.0], FLOAT_DTYPE)
 
-alpha = 0.95
-risk_measure = partial(hedge_models.ExpectedShortfall, alpha=alpha)
+risk_measure = partial(hedge_models.ExpectedShortfall, alpha=0.95)
+# risk_measure = partial(hedge_models.MeanVariance, aversion=100.0)
 
 units = 15
 layers = 4
@@ -45,10 +44,12 @@ instrument_simulator = simulators.JumpGBM(
 
 # ==============================================================================
 # === hedgebook
+approxhedgebook = books.DerivativeBook(
+    maturity, instrument_simulator, numeraire_simulator)
 hedgebook = books.DerivativeBook(
     maturity, instrument_simulator, numeraire_simulator)
 
-spread = 10
+spread = 20 # TODO how wide?
 itm = derivatives.JumpPutCall(
     hedgebook.maturity,
     init_instruments - spread / 2,
@@ -72,10 +73,22 @@ hedgebook.add_derivative(itm, 0, 1)
 hedgebook.add_derivative(atm, 0, -2)
 hedgebook.add_derivative(otm, 0, 1)
 
+approxhedgebook.add_derivative(
+    derivatives.BachelierJumpCall.from_jumpputcall(
+        itm, init_instruments), 0, 1)
+approxhedgebook.add_derivative(
+    derivatives.BachelierJumpCall.from_jumpputcall(
+        atm, init_instruments), 0, -2)
+approxhedgebook.add_derivative(
+    derivatives.BachelierJumpCall.from_jumpputcall(
+        otm, init_instruments), 0, 1)
+
+
 # ==============================================================================
 # === tradable book
+approxtradebook = books.TradeBook(approxhedgebook)
 tradebook = books.TradeBook(hedgebook)
-num_tradables = int(sys.argv[2])
+num_tradables = 2 # int(sys.argv[2]) TODO
 
 # determine distribution of strikes
 sobol = tf.math.sobol_sample(1, num_tradables)
@@ -90,6 +103,9 @@ for k in strikes:
         maturity, k, rate, instrument_simulator.volatility,
         intensity, jumpsize, jumpvol, theta)
     tradebook.add_derivative(option)
+    approxtradebook.add_derivative(
+        derivatives.BachelierJumpCall.from_jumpputcall(
+            option, init_instruments))
 
 # ==============================================================================
 # === feature functions
@@ -99,19 +115,11 @@ def lazy_feature_function(raw_data, **kwargs):
 
     return tf.unstack(tf.pad(main, pad), axis=-1)
 
-def jump_feature_function(raw_data, **kwargs):
-    ratios = derivatives.jumpriskratios(
-        tradebook,
-        raw_data["time"],
-        raw_data["instruments"],
-        raw_data["numeraire"])
-
-    return tf.unstack(ratios * raw_data["numeraire"][:-1], axis=-1)
 
 # ==============================================================================
 # === test
-folder_name = r"results\experiment-8\cost" if cost \
-    else r"results\experiment-8\no-cost"
+folder_name = r"results\experiment-9\cost" if cost \
+    else r"results\experiment-9\no-cost"
 num_trials = 2**3
 lst_of_drivers =  []
 
@@ -119,18 +127,19 @@ for num in range(num_trials):
     print(f"number of tradables {num_tradables} at test {num + 1} ".ljust(80, "="), end="")
     start = perf_counter()
 
-    driver = utils.HedgeDriver(
+    # === true driver
+    truedriver = utils.HedgeDriver(
         timesteps=timesteps,
         frequency=0, # no need for frequency for non-path dependent derivatives.
         init_instruments=init_instruments,
         init_numeraire=init_numeraire,
         book=tradebook,
         cost=1/100 if cost else None,
-        risk_neutral=not cost,
+        risk_neutral=True, # TODO not cost,
         learning_rate=1e-1
         )
 
-    driver.add_testcase(
+    truedriver.add_testcase(
         "lazy continuous-time",
         hedge_models.FeatureHedge(),
         risk_measure=risk_measure(),
@@ -138,16 +147,8 @@ for num in range(num_trials):
         feature_function=lazy_feature_function,
         price_type="arbitrage")
 
-    driver.add_testcase(
-        "jump continuous-time",
-        hedge_models.FeatureHedge(),
-        risk_measure=risk_measure(),
-        normaliser=None,
-        feature_function=jump_feature_function,
-        price_type="arbitrage")
-
-    driver.add_testcase(
-        "deep network",
+    truedriver.add_testcase(
+        "deep network w. true value",
         hedge_models.NeuralHedge(
             timesteps=timesteps,
             instrument_dim=tradebook.instrument_dim,
@@ -160,32 +161,41 @@ for num in range(num_trials):
         feature_function="log_martingale",
         price_type="arbitrage")
 
-    driver.add_testcase(
-        "identity feature map",
-        hedge_models.LinearFeatureHedge(
+    truedriver.train(train_size, 1000, int(2**10))
+    truedriver.test(test_size)
+    lst_of_drivers.append(truedriver)
+
+    # === approx driver
+    approxdriver = utils.HedgeDriver(
+        timesteps=timesteps,
+        frequency=0, # no need for frequency for non-path dependent derivatives.
+        init_instruments=init_instruments,
+        init_numeraire=init_numeraire,
+        book=approxtradebook, # important
+        cost=1/100 if cost else None,
+        risk_neutral=True, # TODO not cost,
+        learning_rate=1e-1
+        )
+    approxdriver.add_testbook(tradebook)
+
+    approxdriver.add_testcase(
+        "deep network w. approximate value",
+        hedge_models.NeuralHedge(
             timesteps=timesteps,
             instrument_dim=tradebook.instrument_dim,
-            mappings=[approximators.IdentityFeatureMap] \
-                * (1 + (driver.cost is not None))),
+            internal_dim=0,
+            num_layers=layers,
+            num_units=units,
+            activation=activation),
         risk_measure=risk_measure(),
-        normaliser=None,
-        feature_function=jump_feature_function,
+        normaliser=preprocessing.MeanVarianceNormaliser(),
+        feature_function="log_martingale",
         price_type="arbitrage")
 
-    if driver.cost is not None or not driver.risk_neutral:
-        driver.add_liability_free(
-            hedge_models.LinearFeatureHedge(
-                timesteps=timesteps,
-                instrument_dim=tradebook.instrument_dim,
-                mappings=[approximators.IdentityFeatureMap] \
-                    * (1 + (driver.cost is not None))),
-            risk_measure=risk_measure(),
-            normaliser=preprocessing.MeanVarianceNormaliser(),
-            feature_function="log_martingale")
-    driver.train(train_size, 1000, int(2**10))
-    driver.test(test_size)
+    approxdriver.train(train_size, 1000, int(2**10))
+    approxdriver.test(test_size)
 
-    lst_of_drivers.append(driver)
+    lst_of_drivers.append(approxdriver)
 
     end = perf_counter() - start
     print(f" {end:.3f}s")
@@ -204,3 +214,20 @@ utils.driver_data_dumb(
      "price", "train_time"],
     file_name
     )
+
+
+
+raw_data = approxdriver.sample(int(2**10))
+
+truecase = truedriver.testcases[1]
+true_input_data = truedriver.get_input(truecase, raw_data)
+truestrategy = truecase["model"].strategy(true_input_data[0], training=False)
+
+approxcase = approxdriver.testcases[0]
+approx_input_data = approxdriver.get_input(approxcase, raw_data)
+approxstrategy = approxcase["model"].strategy(approx_input_data[0], training=False)
+
+
+for step in tf.range(timesteps):
+    print(np.round(truestrategy[..., step], 2))
+    print(np.round(approxstrategy[..., step], 2))

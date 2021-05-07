@@ -19,11 +19,30 @@ def _fit_to_dimension(dimension, vector):
 
     return vector
 
-def random_empty_book(maturity, dimension, rate, drift, volatility, seed=None):
+
+def _normalised_exposure(init_instruments, init_numeraire, book, derivative,
+                         link):
+    time, instruments, numeraire = book.sample_paths(
+        init_instruments=init_instruments,
+        init_numeraire=init_numeraire,
+        batch_size=1,
+        timesteps=2,
+        risk_neutral=True
+        )
+    value = derivative.value(time, instruments[:, link, :], numeraire)
+
+    return 1.0 / value[0, 0]
+
+def random_empty_book(maturity, dimension, rate, drift, volatility,
+                      seed=None, volatility_noise=None):
     tf.random.set_seed(seed)
     rate = float(rate)
     drift = _fit_to_dimension(dimension, drift)
     volatility = _fit_to_dimension(dimension, volatility)
+
+    if volatility_noise is not None:
+        volatility += tf.random.normal(tf.shape(volatility),
+                                       stddev=volatility_noise)
 
     # scale diffusion to have row norms equal to volatility
     diffusion = tf.random.uniform((dimension, dimension), minval=-1, maxval=1)
@@ -41,9 +60,11 @@ def random_empty_book(maturity, dimension, rate, drift, volatility, seed=None):
     return init_instruments, init_numeraire, book
 
 
-def add_butterfly(init_instruments, book, spread):
+def add_butterfly(init_instruments, init_numeraire, book, spread,
+                  normalise=False):
     dimension = book.instrument_dim
-
+    if dimension != len(init_instruments):
+        raise ValueError("wrong dimension of init_instruments.")
     for link, spot in enumerate(init_instruments):
         itm = derivatives.PutCall(
             book.maturity,
@@ -71,6 +92,8 @@ def add_butterfly(init_instruments, book, spread):
 
 def add_dga_calls(init_instruments, book):
     dimension = book.instrument_dim
+    if dimension != len(init_instruments):
+        raise ValueError("wrong dimension of init_instruments.")
     strikes = tf.pow(init_instruments, book.maturity)
 
     for link, k in enumerate(strikes):
@@ -87,6 +110,8 @@ def add_dga_calls(init_instruments, book):
 
 def add_rko(init_instruments, book, spread):
     dimension = book.instrument_dim
+    if dimension != len(init_instruments):
+        raise ValueError("wrong dimension of init_instruments.")
 
     for link, spot in enumerate(init_instruments):
         rko = derivatives.BarrierCall(
@@ -102,8 +127,11 @@ def add_rko(init_instruments, book, spread):
         book.add_derivative(rko, link, 1 / dimension)
 
 
-def add_calls(init_instruments, book):
-    dimension = len(init_instruments)
+def add_calls(init_instruments, init_numeraire, book, normalise=None):
+    dimension = book.instrument_dim
+    if dimension != len(init_instruments):
+        raise ValueError("wrong dimension of init_instruments.")
+
     for link in tf.range(dimension):
         derivative = derivatives.PutCall(
             book.maturity,
@@ -112,4 +140,11 @@ def add_calls(init_instruments, book):
             book.instrument_simulator.volatility[link],
             1
             )
-        book.add_derivative(derivative, link, 1 / dimension)
+
+        if normalise is not None:
+            exposure = normalise * _normalised_exposure(
+                init_instruments, init_numeraire, book, derivative, link)
+        else:
+            exposure = 1.0
+
+        book.add_derivative(derivative, link, exposure / dimension)

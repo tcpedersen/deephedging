@@ -1,25 +1,26 @@
 # -*- coding: utf-8 -*-
-import books
+import random_books
 import utils
 import hedge_models
 
 # ==============================================================================
 # === hyperparameters
 train_size, test_size, timesteps = int(2**16), int(2**16), 14
+hedge_multiplier = 2**0
 frequency = 0 # only > 0 for continuous, else 0
-hedge_multiplier = 2**7
-alpha = 0.99
+alpha = 0.95
 
-folder_name = r"figures\bin"
+folder_name = r"figures\delta-pnl-plots"
+case_name = "call"
 
 # ==============================================================================
 # === sample data
-init_instruments, init_numeraire, book = books.simple_put_call_book(
-    timesteps / 250, 100., 100, 0.02, 0.05, 0.2, 1.)
-# init_instruments, init_numeraire, book = books.simple_dga_putcall_book(
-#     timesteps / 250, 100., 100**(timesteps / 250), 0.02, 0.05, 0.2, 1.)
-# init_instruments, init_numeraire, book = books.simple_barrier_book(
-#     timesteps / 250, 100, 105, 95, 0.02, 0.05, 0.2, 1, -1)
+init_instruments, init_numeraire, book = random_books.random_empty_book(
+    timesteps / 250, 1, 0.02, 0.05, 0.2, seed=69) # NOTE timesteps / 52 for DGA
+
+random_books.add_calls(init_instruments, book)
+# random_books.add_dga_calls(init_instruments, book)
+# random_books.add_rko(init_instruments, book, 10.0)
 
 driver = utils.HedgeDriver(
     timesteps=timesteps * hedge_multiplier,
@@ -33,11 +34,11 @@ driver = utils.HedgeDriver(
     )
 
 driver.add_testcase(
-    "delta",
+    case_name,
     hedge_models.FeatureHedge(),
     risk_measure=hedge_models.ExpectedShortfall(alpha),
     normaliser=None,
-    feature_type="delta",
+    feature_function="delta",
     price_type="arbitrage")
 
 driver.train(train_size, 100, 2**12)
@@ -46,6 +47,7 @@ driver.test_summary()
 
 full_folder_name = fr"{folder_name}/payoff-{hedge_multiplier}-{frequency}"
 
-utils.plot_markovian_payoff(driver, test_size, driver.testcases[0]["price"])
-# utils.plot_geometric_payoff(driver, test_size)
-# utils.plot_univariate_barrier_payoff(driver, test_size, full_folder_name)
+price = driver.testcases[0]["price"]
+utils.plot_markovian_payoff(driver, test_size, price, full_folder_name)
+# utils.plot_geometric_payoff(driver, test_size, price, full_folder_name)
+# utils.plot_univariate_barrier_payoff(driver, test_size, price, full_folder_name)
