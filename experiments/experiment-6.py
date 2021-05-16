@@ -17,12 +17,10 @@ tf.get_logger().setLevel('ERROR')
 # === train gradient models
 rate = 0.02
 drift = 0.05
-volatility = 0.2
 
 warmup_train_size_twin = int(2**13)
 warmup_train_size_value = int(2**13)
 
-activation = tf.keras.activations.softplus
 layers = 4
 units = 20
 dimension = int(sys.argv[1])
@@ -39,9 +37,10 @@ for num in range(number_of_tests):
     start = perf_counter()
 
     timesteps = 13
+    volatility = tf.random.uniform((dimension, ), 0.2, 0.3)
     init_instruments, init_numeraire, book = random_books.random_empty_book(
         timesteps / 52, dimension, rate, drift, volatility, num)
-    random_books.add_calls(init_instruments, book)
+    random_books.add_butterfly(init_instruments, book, 20)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,
@@ -60,7 +59,7 @@ for num in range(number_of_tests):
         model=gradient_models.SequenceValueNetwork(
             layers=layers,
             units=units,
-            activation=activation
+            activation=tf.keras.activations.softplus
             ),
         train_size=warmup_train_size_value
         )
@@ -70,7 +69,7 @@ for num in range(number_of_tests):
         model=gradient_models.SequenceTwinNetwork(
             layers=layers,
             units=units,
-            activation=activation
+            activation=tf.keras.activations.softplus
             ),
         train_size=warmup_train_size_twin
         )
@@ -80,7 +79,7 @@ for num in range(number_of_tests):
         model=gradient_models.SequenceDeltaNetwork(
             layers=layers,
             units=units,
-            activation=activation
+            activation=tf.keras.activations.sigmoid
             ),
         train_size=warmup_train_size_twin
         )
@@ -143,7 +142,11 @@ utils.driver_data_dumb(
 
 utils.driver_data_dumb(
     test_hedge_drivers,
-    ["test_risk", "test_wealth_with_price_abs_mean",
-     "test_wealth_with_price_variance", "price", "train_time"],
+    ["train_risk", "test_risk",
+     "test_mean_value", "test_mean_abs_value", "test_variance_value",
+     "test_mean_costs", "test_mean_abs_costs", "test_variance_costs",
+     "test_mean_wealth", "test_mean_abs_wealth", "test_variance_wealth",
+     "test_wealth_with_price_abs_mean", "test_wealth_with_price_variance",
+     "price", "train_time"],
     file_name
     )

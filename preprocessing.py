@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-import tensorflow_probability as tfp
 import abc
+
+from sklearn.decomposition import PCA
 
 class Normaliser(abc.ABC):
     @abc.abstractmethod
@@ -80,6 +81,43 @@ class MeanVarianceNormaliser(Normaliser):
         xc = tf.where(tf.equal(variance, 0.), mean, xc)
 
         return tf.cast(xc, y.dtype)
+
+
+class PrincipalComponentAnalysis(Normaliser):
+    def __init__(self, threshold):
+        self.threshold = float(threshold)
+
+
+    def fit(self, x):
+        self.pca = []
+        for v in x:
+            pca = PCA(self.threshold, whiten=True, svd_solver="full")
+            pca.fit(v.numpy())
+            self.pca.append(pca)
+
+
+    def transform(self, x):
+        xc = [tf.cast(v, tf.float64) for v in x]
+        output = []
+
+        for v, pca in zip(xc, self.pca):
+            z = tf.convert_to_tensor(pca.transform(v.numpy()), v.dtype)
+            z = tf.zeros_like(z) if tf.reduce_all(tf.math.is_nan(z)) else z
+            output.append(z)
+
+        return [tf.cast(o, v.dtype) for o, v in zip(output, x)]
+
+
+    def inverse_transform(self, x):
+        raise NotImplementedError
+        xc = [tf.cast(v, tf.float64) for v in x]
+        output = []
+
+        for v, pca in zip(xc, self.pca):
+            z = pca.inverse_transform(v.numpy())
+            output.append(z)
+
+        return [tf.cast(o, v.dtype) for o, v in zip(output, x)]
 
 
 class IOMeanVarianceNormaliser:

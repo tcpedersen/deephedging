@@ -11,8 +11,8 @@ from constants import FLOAT_DTYPE
 
 # ==============================================================================
 # === parameters
-cost = False
-train_size, test_size, timesteps = int(2**16), int(2**16), 14
+cost = True
+train_size, test_size, timesteps = int(2**10), int(2**10), 14
 maturity = timesteps / 250
 rate, drift, diffusion = 0.02, [0.05], [[0.15]]
 intensity, jumpsize, jumpvol = 0.25, -0.2, 0.15
@@ -77,14 +77,14 @@ for k in strikes:
     tradebook.add_derivative(option)
 
 # ==============================================================================
-# === compute hedge ratios
-def lazy_feature_function(raw_data):
+# === feature functions
+def lazy_feature_function(raw_data, **kwargs):
     main = raw_data["delta"][:, 0, tf.newaxis, :-1] * raw_data["numeraire"][:-1]
     pad = [[0, 0], [0, tf.shape(raw_data["delta"])[1] - 1], [0, 0]]
 
     return tf.unstack(tf.pad(main, pad), axis=-1)
 
-def jump_feature_function(raw_data):
+def jump_feature_function(raw_data, **kwargs):
     ratios = derivatives.jumpriskratios(
         tradebook,
         raw_data["time"],
@@ -99,7 +99,7 @@ driver = utils.HedgeDriver(
     init_instruments=init_instruments,
     init_numeraire=init_numeraire,
     book=tradebook,
-    cost=1/100 if cost else None,
+    cost=None, #1/100 if cost else None,
     risk_neutral=not cost,
     learning_rate=1e-1
     )
@@ -120,7 +120,7 @@ driver.add_testcase(
     feature_function=jump_feature_function,
     price_type="arbitrage")
 
-driver.train(train_size, 1000, int(2**10))
+driver.train(train_size, 1, int(2**10))
 driver.test(test_size)
 
 utils.plot_markovian_payoff(driver, int(2**14), driver.testcases[0]["price"])

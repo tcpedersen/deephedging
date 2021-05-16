@@ -35,14 +35,12 @@ class GradientDriver(object):
     def add_testcase(self, name, model, train_size):
         if isinstance(model, gradient_models.SequenceDeltaNetwork):
             normaliser = preprocessing.IOMeanVarianceNormaliser()
-
         elif isinstance(model, gradient_models.SequenceTwinNetwork) \
-            or isinstance(model, gradient_models.SequenceValueNetwork):
+            or isinstance(model, gradient_models.SequenceValueNetwork) \
+                or isinstance(model, gradient_models.SequencePolynomial):
             normaliser = preprocessing.DifferentialMeanVarianceNormaliser()
-
         else:
             raise TypeError("invalid model.")
-
         self.testcases.append({
             "name": name,
             "model": model,
@@ -70,15 +68,12 @@ class GradientDriver(object):
             exploring_loc=self.exploring_loc if exploring else None,
             exploring_scale=self.exploring_scale if exploring else None
             )
-
         value = self.book.value(time, instruments, numeraire)
         delta = self.book.delta(time, instruments, numeraire)
         payoff = self.book.payoff(time, instruments, numeraire)
         adjoint = self.book.adjoint(time, instruments, numeraire)
-
         if metrics is not None:
             metrics = [m(time, instruments, numeraire) for m in metrics]
-
         skip = 2**self.frequency
         raw_data = {
             "time": time[::skip][..., :-1],
@@ -90,51 +85,53 @@ class GradientDriver(object):
             "adjoint": adjoint[..., ::skip][..., :-1],
             "metrics": metrics
             }
-
         if not tf.math.reduce_variance(raw_data["payoff"]) > 0:
             raise RuntimeError("payoff data is degenerate.")
-
         return raw_data
 
 
     def transform(self, case, raw_data, only_inputs=False):
         if only_inputs and case["trained"]:
-            return case["normaliser"].transform_x(
-                raw_data["instruments"][..., :self.timesteps])
+            x = raw_data["instruments"][..., :self.timesteps]
+            if case["normaliser"] is None:
+                return x
+            return case["normaliser"].transform_x(x)
         elif only_inputs and not case["trained"]:
             raise ValueError("if only_inputs is True, then case must be ",
                              "'trained'.")
-
         keys = ["instruments", "payoff", "adjoint"]
         x, y, dydx = [raw_data[key] for key in keys]
-
         attr = "fit_transform" if not case["trained"] else "transform"
-
         if isinstance(case["model"], gradient_models.SequenceValueNetwork):
             norm_x, norm_y, norm_dydx = getattr(case["normaliser"], attr)(
                 x, y, dydx)
-
             return norm_x, norm_y
-
-        elif isinstance(case["model"], gradient_models.SequenceTwinNetwork):
+        elif isinstance(case["model"], gradient_models.SequenceTwinNetwork) \
+            or isinstance(case["model"], gradient_models.SequencePolynomial):
             norm_x, norm_y, norm_dydx = getattr(case["normaliser"], attr)(
                 x, y, dydx)
-
             return norm_x, [norm_y, norm_dydx]
-
         elif isinstance(case["model"], gradient_models.SequenceDeltaNetwork):
             norm_x, norm_dydx = getattr(case["normaliser"], attr)(x, dydx)
-
             return norm_x, norm_dydx
+        elif case["normaliser"] is None:
+            # in this case there is no normaliser
+            return x, [y, dydx]
+        raise NotImplementedError
 
 
     def inverse_transform(self, case, norm_dydx):
-        if isinstance(case["model"], gradient_models.SequenceValueNetwork) \
-            or isinstance(case["model"], gradient_models.SequenceTwinNetwork):
+        model = case["model"]
+        if isinstance(model, gradient_models.SequenceValueNetwork) \
+            or isinstance(model, gradient_models.SequenceTwinNetwork) \
+                or isinstance(model, gradient_models.SequencePolynomial):
             return case["normaliser"].inverse_transform_dydx(norm_dydx)
-
         elif isinstance(case["model"], gradient_models.SequenceDeltaNetwork):
             return case["normaliser"].inverse_transform_y(norm_dydx)
+        elif case["normaliser"] is None:
+            # in this case there is not normaliser
+            return norm_dydx
+        raise NotImplementedError
 
 
     def evaluate_case(self, case, raw_data):
@@ -194,8 +191,8 @@ class GradientDriver(object):
         start = perf_counter()
         case["history"] = case["model"].fit(
             inputs, output,
-            batch_size,
-            epochs,
+            batch_size=batch_size,
+            epochs=epochs,
             callbacks=callbacks,
             verbose=0)
         end = perf_counter() - start
@@ -225,29 +222,24 @@ class GradientDriver(object):
         return max([case["train_size"] for case in self.testcases])
 
 
-    def weighted_mape(self, actual, prediction):
-        a = utils.cast_apply(tf.reduce_sum, tf.abs(actual - prediction), axis=0)
-        b = utils.cast_apply(tf.reduce_sum, tf.abs(actual), axis=0)
-
-        return a / b
-
-
     def mean_squared_error(self, actual, prediction):
-        error = utils.cast_apply(
+        error = actual - prediction
+        measure = utils.cast_apply(
             tf.reduce_mean,
-            tf.square(actual - prediction),
-            axis=0)
+            tf.linalg.norm(error, axis=1)
+            )
 
-        return error
+        return float(measure)
 
 
     def mean_absolute_error(self, actual, prediction):
-        error = utils.cast_apply(
+        error = actual - prediction
+        measure = utils.cast_apply(
             tf.reduce_mean,
-            tf.abs(actual - prediction),
+            utils.cast_apply(tf.reduce_sum, tf.abs(error), axis=1),
             axis=0)
 
-        return error
+        return float(measure)
 
 
     def test(self, sample_size):
@@ -257,8 +249,7 @@ class GradientDriver(object):
         for case in self.testcases:
             dydx = self.evaluate_case(case, raw_data)
 
-            for attr in ["weighted_mape",
-                         "mean_squared_error",
+            for attr in ["mean_squared_error",
                          "mean_absolute_error"]:
                 error_measure = getattr(self, attr)
                 case[f"test_delta_{error_measure.__name__}"] = error_measure(

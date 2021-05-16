@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
+import numpy as np
 import abc
 
 from tensorflow.keras.layers import Dense
@@ -32,14 +33,48 @@ class Polynomial(tf.keras.layers.Layer):
         self.kernel = self.add_weight("kernel", (degree + 1, 1))
 
 
-    def expand_feature(self, x):
-        return tf.concat([tf.pow(x, float(n)) \
-                          for n in tf.range(self.degree + 1)], 1)
+    def basis(self, x):
+        e = []
+        exponent = tf.cast(tf.range(self.degree + 1), x.dtype)
+        for v in tf.unstack(x, axis=-1):
+            e.append(tf.pow(v[:, tf.newaxis], exponent))
+
+        return tf.concat(e, -1)
+
+
+    def basis_jacobian(self, x):
+        exponent = tf.cast(tf.range(self.degree + 1), x.dtype)
+        diffexpo = exponent - 1.0
+        adjphi = exponent * tf.pow(x, diffexpo)
+        # if x is zero adjphi is 0 * 0**(-1)
+        return tf.where(tf.math.is_nan(adjphi), 0.0, adjphi)
+
+
+    def fit(self, x, y, dydx):
+        xc = tf.cast(x, tf.float64)
+        yc = tf.cast(y, tf.float64)
+        dydxc = tf.cast(dydx, tf.float64)
+
+        phi = self.basis(xc)
+        adjphi = self.basis_jacobian(xc)
+        w = tf.linalg.norm(yc, axis=0)**2 / tf.linalg.norm(dydxc, axis=0)**2
+        matrix = w * tf.transpose(phi) @ phi \
+            + (1 - w) * tf.transpose(adjphi) @ adjphi
+        rhs = w * tf.transpose(phi) @ yc \
+            + (1 - w) * tf.transpose(adjphi) @ dydxc
+
+        self.kernel.assign(tf.cast(np.linalg.solve(matrix, rhs), x.dtype))
+
 
     def call(self, inputs, training=False):
-        x = self.expand_feature(inputs)
+        phi = self.basis(inputs)
+        return phi @ self.kernel
 
-        return x @ self.kernel
+
+    def gradient(self, inputs, training=False):
+        adjphi = self.basis_jacobian(inputs)
+        return adjphi @ self.kernel
+
 
 # ==============================================================================
 # ===
@@ -199,65 +234,23 @@ class SequencePolynomial(tf.keras.Model):
             self.polynomials.append(Polynomial(self.degree))
 
 
-    def fit(self, x, y, weight, **kwargs):
-        raise NotImplementedError()
+    def fit(self, inputs, outputs, **kwargs):
+        x, (y, dydx) = inputs, outputs
+        for step, poly in enumerate(self.polynomials):
+            poly.fit(x[..., step], y[..., tf.newaxis], dydx[..., step])
 
 
-class SequenceFullTwinNetwork(tf.keras.Model):
-    def __init__(self, timesteps, layers, units, activation, output_dim):
-        super().__init__()
-
-        self.networks = []
-        for _ in range(timesteps):
-            network = FeedForwardNeuralNetwork(
-                layers=layers,
-                units=units,
-                output_dim=output_dim,
-                activation=activation,
-                output_activation=activation
-                )
-
-            self.networks.append(network)
-
-
-    def build(self, input_shape):
-        step_input_shape = tf.TensorShape((input_shape[0], input_shape[1]))
-        for network in self.networks:
-            network.build(step_input_shape)
-
-
-    @tf.function
-    def singlecall(self, x, network, training):
-        with tf.GradientTape(watch_accessed_variables=False) as tape:
-            tape.watch(x)
-            y = network(x, training=training)
-        dydx = tape.batch_jacobian(y, x)
-
-        return y, dydx
-
-
-    @tf.autograph.experimental.do_not_convert
     def call(self, inputs, training=False):
-        """Implementation of call.
-        Args:
-            inputs:
-                x: (batch, input_dim, timesteps)
-        Returns:
-            output:
-                y: (batch, output_dim, timesteps)
-                dydx: (batch, output_dim, input_dim, timesteps)
-        """
         outputs = []
-        gradients = []
+        for step, poly in enumerate(self.polynomials):
+            outputs.append(poly(inputs[..., step]))
 
-        for step, network in enumerate(self.networks):
-            x = inputs[..., step]
-            y, dydx = self.singlecall(x, network, training)
+        return tf.stack(outputs, -1)
 
-            outputs.append(y)
-            gradients.append(dydx)
-
-        return tf.stack(outputs, -1), tf.stack(gradients, -1)
 
     def gradient(self, inputs, training=False):
-        return self(inputs, training=training)[1]
+        outputs = []
+        for step, poly in enumerate(self.polynomials):
+            outputs.append(poly.gradient(inputs[..., step]))
+
+        return tf.stack(outputs, -1)

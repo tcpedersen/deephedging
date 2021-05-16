@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-import tensorflow_probability as tfp
 
 import books
 import simulators
 import derivatives
 
-from constants import FLOAT_DTYPE, INT_DTYPE
+from constants import FLOAT_DTYPE
 
 # =============================================================================
 # === helpers
@@ -20,29 +19,11 @@ def _fit_to_dimension(dimension, vector):
     return vector
 
 
-def _normalised_exposure(init_instruments, init_numeraire, book, derivative,
-                         link):
-    time, instruments, numeraire = book.sample_paths(
-        init_instruments=init_instruments,
-        init_numeraire=init_numeraire,
-        batch_size=1,
-        timesteps=2,
-        risk_neutral=True
-        )
-    value = derivative.value(time, instruments[:, link, :], numeraire)
-
-    return 1.0 / value[0, 0]
-
-def random_empty_book(maturity, dimension, rate, drift, volatility,
-                      seed=None, volatility_noise=None):
+def random_empty_book(maturity, dimension, rate, drift, volatility, seed=None):
     tf.random.set_seed(seed)
     rate = float(rate)
     drift = _fit_to_dimension(dimension, drift)
     volatility = _fit_to_dimension(dimension, volatility)
-
-    if volatility_noise is not None:
-        volatility += tf.random.normal(tf.shape(volatility),
-                                       stddev=volatility_noise)
 
     # scale diffusion to have row norms equal to volatility
     diffusion = tf.random.uniform((dimension, dimension), minval=-1, maxval=1)
@@ -60,8 +41,7 @@ def random_empty_book(maturity, dimension, rate, drift, volatility,
     return init_instruments, init_numeraire, book
 
 
-def add_butterfly(init_instruments, init_numeraire, book, spread,
-                  normalise=False):
+def add_butterfly(init_instruments, book, spread):
     dimension = book.instrument_dim
     if dimension != len(init_instruments):
         raise ValueError("wrong dimension of init_instruments.")
@@ -127,7 +107,7 @@ def add_rko(init_instruments, book, spread):
         book.add_derivative(rko, link, 1 / dimension)
 
 
-def add_calls(init_instruments, init_numeraire, book, normalise=None):
+def add_calls(init_instruments, book):
     dimension = book.instrument_dim
     if dimension != len(init_instruments):
         raise ValueError("wrong dimension of init_instruments.")
@@ -141,10 +121,4 @@ def add_calls(init_instruments, init_numeraire, book, normalise=None):
             1
             )
 
-        if normalise is not None:
-            exposure = normalise * _normalised_exposure(
-                init_instruments, init_numeraire, book, derivative, link)
-        else:
-            exposure = 1.0
-
-        book.add_derivative(derivative, link, exposure / dimension)
+        book.add_derivative(derivative, link, 1 / dimension)

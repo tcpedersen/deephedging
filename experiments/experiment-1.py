@@ -17,7 +17,8 @@ if str(sys.argv[1]) == "cost":
 else:
     cost = False
 
-folder_name = r"results\experiment-1\cost" if cost else r"results\experiment-1\no-cost"
+folder_name = r"results\experiment-1\cost" if cost \
+    else r"results\experiment-1\no-cost"
 
 # ==============================================================================
 # === hyperparameters
@@ -82,6 +83,22 @@ for num in range(num_trials):
         feature_function="log_martingale",
         price_type="arbitrage")
 
+
+    driver.add_testcase(
+        "deep network w. PCA",
+        hedge_models.NeuralHedge(
+            timesteps=timesteps * hedge_multiplier,
+            instrument_dim=book.instrument_dim,
+            internal_dim=0,
+            num_layers=layers,
+            num_units=units,
+            activation=activation),
+        risk_measure=hedge_models.ExpectedShortfall(alpha),
+        normaliser=preprocessing.PrincipalComponentAnalysis(0.9),
+        feature_function="log_martingale",
+        price_type="arbitrage")
+
+
     driver.add_testcase(
         "identity feature map",
         hedge_models.LinearFeatureHedge(
@@ -114,7 +131,7 @@ for num in range(num_trials):
     print(f" {end:.3f}s")
 
 
-file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
+file_name = os.path.join(folder_name, fr"dimension-{dimension}-extra.txt")
 if os.path.exists(file_name):
     os.remove(file_name)
 

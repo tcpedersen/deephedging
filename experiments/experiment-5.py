@@ -68,7 +68,7 @@ for num in range(number_of_tests):
         learning_rate_max=1e-2
         )
 
-    warmup_driver.set_exploration(100., 15.)
+    warmup_driver.set_exploration(100.0, 15.0)
 
     for layers in [2, 4]:
         for units in [20]:
@@ -160,7 +160,11 @@ utils.driver_data_dumb(
 
 utils.driver_data_dumb(
     test_hedge_drivers,
-    ["test_risk", "test_wealth_with_price_abs_mean",
-     "test_wealth_with_price_variance", "price", "train_time"],
+    ["train_risk", "test_risk",
+     "test_mean_value", "test_mean_abs_value", "test_variance_value",
+     "test_mean_costs", "test_mean_abs_costs", "test_variance_costs",
+     "test_mean_wealth", "test_mean_abs_wealth", "test_variance_wealth",
+     "test_wealth_with_price_abs_mean", "test_wealth_with_price_variance",
+     "price", "train_time"],
     file_name
     )

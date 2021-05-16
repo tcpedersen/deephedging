@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
 import os
-import pandas as pd
 import sys
 
 from time import perf_counter
 
+import utils
 import gradient_models
 import gradient_driver
 import random_books
@@ -25,19 +25,19 @@ folder_name = r"results\experiment-4"
 # === train gradient models
 rate = 0.02
 drift = 0.05
-volatility = 0.2
 
-number_of_tests = 2**3
+number_of_tests = 2**7
 test_drivers = []
 
 for num in range(number_of_tests):
     print(f"dimension {dimension} at test {num + 1} ".ljust(80, "="), end="")
     start = perf_counter()
 
+    volatility = tf.random.uniform((dimension, ), 0.2, 0.3)
     init_instruments, init_numeraire, book = random_books.random_empty_book(
         13 / 52, dimension, rate, drift, volatility, num)
-    random_books.add_calls(init_instruments, init_numeraire, book,
-                           normalise=True)
+    # random_books.add_butterfly(init_instruments, book, spread=20)
+    random_books.add_calls(init_instruments, book)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,
@@ -49,7 +49,7 @@ for num in range(number_of_tests):
         learning_rate_max=1e-2
         )
 
-    warmup_driver.set_exploration(100., 15.)
+    warmup_driver.set_exploration(100.0, 15.0)
 
     warmup_driver.add_testcase(
         name="value network",
@@ -89,53 +89,14 @@ for num in range(number_of_tests):
     end = perf_counter() - start
     print(f" {end:.3f}s")
 
-file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
+file_name = os.path.join(folder_name, fr"dimension-{dimension}-call.txt")
 if os.path.exists(file_name):
     os.remove(file_name)
 
-for idx in range(len(warmup_driver.testcases)):
-    with open(file_name, "a") as file:
-        name = warmup_driver.testcases[idx]["name"]
-        file.write("".ljust(80, "=") + "\n")
-        file.write("=== " + name + "\n")
-
-    train_time = []
-    mse_error = []
-    mae_error = []
-
-    for test in test_drivers:
-        train_time.append(test.testcases[idx]["train_time"])
-        mse_error.append(
-            tf.squeeze(test.testcases[idx]["test_delta_mean_squared_error"]))
-        mae_error.append(
-            tf.squeeze(test.testcases[idx]["test_delta_mean_absolute_error"]))
-
-    with open(file_name, "a") as file:
-        file.write("train time\n")
-    pd.DataFrame(train_time).T.to_csv(
-        file_name,
-        header=False,
-        index=False,
-        mode="a"
-        )
-
-    with open(file_name, "a") as file:
-        file.write("mean squared error\n")
-    pd.DataFrame(tf.stack(mse_error).numpy()).to_csv(
-        file_name,
-        header=False,
-        index=False,
-        mode="a"
-        )
-
-    with open(file_name, "a") as file:
-        file.write("mean absolute error\n")
-    pd.DataFrame(tf.stack(mae_error).numpy()).to_csv(
-        file_name,
-        header=False,
-        index=False,
-        mode="a"
-        )
-
-    with open(file_name, "a") as file:
-        file.write("\n\n")
+utils.driver_data_dumb(
+    test_drivers,
+    ["train_time",
+     "test_delta_mean_squared_error",
+     "test_delta_mean_absolute_error"],
+    file_name
+    )

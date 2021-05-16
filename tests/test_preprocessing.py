@@ -3,7 +3,6 @@ import tensorflow as tf
 
 import unittest
 from tensorflow.debugging import assert_near
-import tensorflow_probability as tfp
 
 import preprocessing
 from constants import FLOAT_DTYPE
@@ -120,3 +119,18 @@ class test_DifferentialMeanVarianceNormaliser(unittest.TestCase):
         renorm = normaliser.inverse_transform(norm_x, norm_h, norm_dhdx)
         for result, expected in zip(renorm, [x, h, dhdx]):
             tf.debugging.assert_near(result, expected)
+
+
+
+class test_PCA(unittest.TestCase):
+    @unittest.skip("inverse_transform seemingly unprecise.")
+    def test_PCA(self):
+        batch, height, width, degenerate = int(2**10), 7, 8, 4
+        x = get_degenerate_sample(batch, height, width, degenerate, 69)
+        inputs = [x[..., 0] for x in tf.split(x, width, axis=-1)]
+
+        normaliser = preprocessing.PrincipalComponentAnalysis(0.95)
+        outputs = normaliser.fit_transform(inputs)
+        reinputs = normaliser.inverse_transform(outputs)
+
+        tf.debugging.assert_near(inputs, reinputs)

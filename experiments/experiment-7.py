@@ -19,8 +19,6 @@ tf.get_logger().setLevel('ERROR')
 # === train gradient models
 rate = 0.02
 drift = 0.05
-volatility = 0.2
-spread = 10
 
 warmup_train_size = int(2**13)
 layers = 4
@@ -29,7 +27,7 @@ dimension = int(sys.argv[1])
 
 folder_name = r"results\experiment-7"
 
-number_of_tests = 2**3
+number_of_tests = 2**5
 
 test_warmup_drivers = []
 test_hedge_drivers = []
@@ -39,10 +37,10 @@ for num in range(number_of_tests):
     start = perf_counter()
 
     timesteps = 13
+    volatility = tf.random.uniform((dimension, ), 0.2, 0.3)
     init_instruments, init_numeraire, book = random_books.random_empty_book(
         timesteps / 52, dimension, rate, drift, volatility, num)
-    random_books.add_butterfly(
-        init_instruments, init_numeraire, book, spread, normalise=True)
+    random_books.add_butterfly(init_instruments, book, 20)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,
@@ -80,7 +78,7 @@ for num in range(number_of_tests):
         init_instruments=init_instruments,
         init_numeraire=init_numeraire,
         book=book,
-        cost=1/100,
+        cost=1 / 100,
         risk_neutral=False,
         learning_rate=1e-1
         )
@@ -143,7 +141,7 @@ for num in range(number_of_tests):
     print(f" {end:.3f}s")
 
 
-file_name = os.path.join(folder_name, fr"dimension-{dimension}-extra.txt") # TODO remove extra
+file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
 if os.path.exists(file_name):
     os.remove(file_name)
 
