@@ -155,9 +155,46 @@ class LinearFeatureApproximator(Approximator):
             see FeatureStrategy._call
         """
         inputs = tf.split(inputs, len(self.mappings), 1)
-        output = 0.
+        output = 0.0
         iterator = zip(inputs, self.kernels, self.mappings)
         for feature, kernel, mapping in iterator:
             output += tf.multiply(kernel, mapping(feature))
 
         return output + self.bias
+
+
+class MatrixFeatureApproximator(Approximator):
+    def __init__(self, instrument_dim):
+        super().__init__(instrument_dim, 0)
+        self.bias = self.add_weight(name="bias",
+                                    shape=(instrument_dim, ),
+                                    initializer="zeros",
+                                    trainable=True)
+
+        self.matrix = self.add_weight(name="matrix",
+                                      shape=(instrument_dim, instrument_dim),
+                                      initializer="glorot_uniform",
+                                      trainable=True)
+        self.use_cost = False
+
+    def build(self, input_shape):
+        if input_shape[1] == self.output_dim:
+            pass
+        elif input_shape[1] == 2 * self.output_dim:
+            # add cost weight
+            self.costkernel = self.add_weight(name="cost_kernel",
+                                              shape=(self.output_dim, ),
+                                              initializer="glorot_uniform",
+                                              trainable=True)
+            self.use_cost = True
+        else:
+            raise NotImplementedError
+
+
+    def _call(self, inputs, training=False):
+        inputs = tf.split(inputs, 2 if self.use_cost else 1, 1)
+        output = tf.matmul(inputs[0], self.matrix, transpose_b=True) + self.bias
+        if self.use_cost:
+            output += tf.multiply(self.costkernel, inputs[1])
+
+        return output

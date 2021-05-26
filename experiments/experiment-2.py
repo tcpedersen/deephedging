@@ -18,7 +18,8 @@ if str(sys.argv[1]) == "cost":
 else:
     cost = False
 
-folder_name = r"results\experiment-2\cost" if cost else r"results\experiment-2\no-cost"
+folder_name = r"results\experiment-2\cost" if cost \
+    else r"results\experiment-2\no-cost"
 
 # ==============================================================================
 # === hyperparameters
@@ -90,7 +91,8 @@ for num in range(num_trials):
         model=hedge_models.LinearFeatureHedge(
             timesteps * hedge_multiplier,
             book.instrument_dim,
-            [approximators.IdentityFeatureMap] * (1 + int(driver.cost is not None))
+            [approximators.IdentityFeatureMap] \
+                * (1 + int(driver.cost is not None))
         ),
         risk_measure=risk_measure(),
         normaliser=None,

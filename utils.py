@@ -268,6 +268,17 @@ class HedgeDriver(object):
         self.liability_free["price"] = 0.
 
 
+    def _use_liability_free(self):
+        if self.cost is None and self.risk_neutral:
+            return False
+        elif self.liability_free is None:
+            return False
+        elif any([case["price_type"] == "indifference" \
+                  for case in self.testcases]):
+            return True
+        return True
+
+
     def normalise_features(self, case, features):
         if case["normaliser"] is not None:
              if not case["trained"]:
@@ -345,14 +356,14 @@ class HedgeDriver(object):
     def assert_all_trained(self):
         for case in self.testcases:
             self.assert_case_is_trained(case)
-        if self.liability_free is not None:
+        if self._use_liability_free():
             self.assert_case_is_trained(self.liability_free)
 
 
     def assert_all_tested(self):
         for case in self.testcases:
             self.assert_case_is_tested(case)
-        if self.liability_free is not None:
+        if self._use_liability_free():
             self.assert_case_is_tested(self.liability_free)
 
 
@@ -392,7 +403,7 @@ class HedgeDriver(object):
                             batch_size=batch_size,
                             epochs=epochs)
 
-        if self.liability_free is not None:
+        if self._use_liability_free():
             input_data = self.get_input(
                 self.liability_free, raw_data)
             input_data[-1] = tf.zeros_like(input_data[-1])
@@ -427,7 +438,7 @@ class HedgeDriver(object):
         self.assert_all_trained()
         raw_data = self.sample(sample_size)
 
-        if self.liability_free is not None:
+        if self._use_liability_free():
             input_data = self.get_input(self.liability_free, raw_data)
             input_data[-1] = tf.zeros_like(input_data[-1])
             self.test_case(self.liability_free, input_data)

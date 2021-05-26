@@ -40,7 +40,8 @@ for num in range(number_of_tests):
     volatility = tf.random.uniform((dimension, ), 0.2, 0.3)
     init_instruments, init_numeraire, book = random_books.random_empty_book(
         timesteps / 52, dimension, rate, drift, volatility, num)
-    random_books.add_butterfly(init_instruments, book, 20)
+#    random_books.add_butterfly(init_instruments, book, 20)
+    random_books.add_calls(init_instruments, book)
 
     warmup_driver = gradient_driver.GradientDriver(
         timesteps=timesteps,
@@ -130,7 +131,7 @@ for num in range(number_of_tests):
     print(f" {end:.3f}s")
 
 
-file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
+file_name = os.path.join(folder_name, fr"dimension-{dimension}-call.txt")
 if os.path.exists(file_name):
     os.remove(file_name)
 

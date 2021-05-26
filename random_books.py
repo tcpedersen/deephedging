@@ -41,6 +41,32 @@ def random_empty_book(maturity, dimension, rate, drift, volatility, seed=None):
     return init_instruments, init_numeraire, book
 
 
+def random_basket_book(maturity, dimension, volatility, seed=None):
+    tf.random.set_seed(seed)
+    volatility = _fit_to_dimension(dimension, volatility)
+    spot = strike = 1.0
+
+    # scale diffusion to have row norms equal to volatility
+    diffusion = tf.random.uniform((dimension, dimension), minval=-1, maxval=1)
+    norm = tf.linalg.norm(diffusion, axis=1)
+    diffusion *= (volatility / norm)[:, tf.newaxis]
+
+    init_instruments = _fit_to_dimension(dimension, spot)
+    init_numeraire = tf.constant([1.0], FLOAT_DTYPE)
+
+    instrument_simulator = simulators.BrownianMotion(diffusion)
+    numeraire_simulator = simulators.ConstantBankAccount(0.0)
+    book = books.BasketBook(
+        maturity, instrument_simulator, numeraire_simulator)
+
+    weights = tf.random.uniform((dimension, ))
+    derivative = derivatives.BachelierBasketCall(
+        maturity, strike, diffusion, weights)
+    book.add_derivative(derivative, 0, 1.0)
+
+    return init_instruments, init_numeraire, book
+
+
 def add_butterfly(init_instruments, book, spread):
     dimension = book.instrument_dim
     if dimension != len(init_instruments):
@@ -122,3 +148,26 @@ def add_calls(init_instruments, book):
             )
 
         book.add_derivative(derivative, link, 1 / dimension)
+
+
+def add_random_putcalls(init_instruments, book, number_of_derivatives=3):
+    dimension = book.instrument_dim
+    if dimension != len(init_instruments):
+        raise ValueError("wrong dimension of init_instruments.")
+
+    for link in tf.range(dimension):
+        for _ in tf.range(number_of_derivatives):
+            spot = init_instruments[link]
+            strike = tf.random.uniform((1, ), minval=spot - 10.0,
+                                       maxval=spot + 10.0)
+            theta = tf.sign(tf.random.uniform((1, )) - 0.5)
+
+            derivative = derivatives.PutCall(
+                book.maturity,
+                strike,
+                book.numeraire_simulator.rate,
+                book.instrument_simulator.volatility[link],
+                theta
+                )
+
+            book.add_derivative(derivative, link, 1 / dimension)

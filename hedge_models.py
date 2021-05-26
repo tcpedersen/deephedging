@@ -144,8 +144,8 @@ class SemiRecurrentHedge(BaseHedge):
 
     def strategy(self, features, training):
         strategies = []
-        hedge = 0.
-        internal = 0.
+        hedge = 0.0
+        internal = 0.0
 
         for step, strategy in enumerate(self.strategy_layers):
             observation = self.observation(step, features, hedge, internal)
@@ -174,89 +174,28 @@ class LinearFeatureHedge(SemiRecurrentHedge):
                 )
             self._strategy_layers.append(approximator)
 
-        self.use_fast_gradient = True
-
 
     @property
     def strategy_layers(self) -> list:
         return self._strategy_layers
 
 
-    def cost_gradient(self, data):
-        if not self.cost > 0:
-            raise NotImplementedError("does not support no cost.")
+class MatrixFeatureHedge(SemiRecurrentHedge):
+    def __init__(self, timesteps, instrument_dim, withcost):
+        super().__init__(append_internal=False,
+                         append_hedge=withcost,
+                         observation_normalise=False)
 
-        (x, ) = data
-        features, martingales, payoff = x
-
-        strategy = self.strategy(features, training=True)
-        value, mincrement = self.compute_value(
-            martingales, strategy, return_full=True)
-        costs, aincrement, proportions = self.compute_cost(
-            martingales, strategy, return_full=True)
-        costweights = [layer.trainable_weights[2] for layer \
-                       in self.strategy_layers[1:]]
-
-        sign = proportions * tf.sign(aincrement)
-        y = [mincrement[..., -1]]
-        z = [sign[..., -1]]
-        for j in range(len(features) - 2, -1, -1):
-            wj = costweights[j]
-            y.insert(0, mincrement[..., j] + wj * y[0])
-
-            if j > 0:
-                dcda = -sign[..., j] + sign[..., j - 1]
-            else:
-                dcda = -sign[..., j]
-            z.insert(0, dcda + wj * z[0])
-
-        ymz = tf.stack(y, -1) - tf.stack(z, -1)
-        gradbias = ymz
-        graddelta = ymz * tf.stack(features, -1)
-        pad = [[0, 0], [0, 0], [1, 0]]
-        gradcosts = ymz * tf.pad(strategy[..., :-1], pad)
-
-        wealth = value - costs - payoff
-        lossgrad = self.risk_measure.gradient(- wealth - self.risk_measure.w)
-        wgrad = 1.0 - tf.reduce_mean(lossgrad, 0)
-
-        extra = [gradcosts] if self.cost > 0 else []
-        gradients = tf.concat([gradbias, graddelta] + extra, 2)
-        gradients *= lossgrad[:, tf.newaxis, tf.newaxis]
-        gradients = tf.unstack(-tf.reduce_mean(gradients, 0), axis=-1)
-
-        if self.cost > 0:
-            # there is no cost parameter in first layer
-            gradients.pop(2 * len(features))
-
-        getter = gradients.__getitem__
-        gradients = [*map(getter, self._get_indices(len(features)))]
-
-        return [wgrad] + gradients, wealth
+        self._strategy_layers = []
+        for step in range(timesteps):
+            approximator = approximators.MatrixFeatureApproximator(
+                instrument_dim=instrument_dim)
+            self._strategy_layers.append(approximator)
 
 
-    def _flatten_list(self, lst):
-        return functools.reduce(operator.iconcat, lst, [])
-
-
-    def _get_indices(self, offset):
-        unflattened = [[0, offset]] \
-            + [[n, offset + n, 2 * offset + n - 1] \
-               for n in range(1, offset)]
-
-        return self._flatten_list(unflattened)
-
-
-    def train_step(self, data):
-        if not self.use_fast_gradient or not self.cost > 0:
-            return super().train_step(data)
-
-        trainable_vars = [self.risk_measure.w] + self.trainable_variables
-        gradients, wealth = self.cost_gradient(data)
-
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
-
-        return {"loss": self.risk_measure(wealth)}
+    @property
+    def strategy_layers(self) -> list:
+        return self._strategy_layers
 
 
 class NeuralHedge(SemiRecurrentHedge):
@@ -303,11 +242,12 @@ class NeuralHedge(SemiRecurrentHedge):
             sample = [tf.gather(features[k], sample_idx, axis=0) \
                       for k in tf.range(step + 1)]
 
-            hedge = 0.
-            internal = 0.
+            hedge = 0.0
+            internal = 0.0
             for k in tf.range(step + 1):
                 observation = self.observation(k, sample, hedge, internal)
-                hedge, internal = self.strategy_layers[k](observation, training=False)
+                hedge, internal = self.strategy_layers[k](observation,
+                                                          training=False)
 
             if step > 0:
                 strategy.initialise(observation, sample_size)

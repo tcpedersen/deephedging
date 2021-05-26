@@ -212,3 +212,15 @@ class ConstantBankAccount(Simulator):
 
     def advance(self, state, rvs, dt, risk_neutral):
         return state + state * self.rate * dt
+
+
+class BrownianMotion(GBM):
+    def __init__(self, diffusion):
+        super().__init__(
+            rate=0.0,
+            drift=tf.constant([0.0] * int(tf.shape(diffusion)[0]), FLOAT_DTYPE),
+            diffusion=tf.constant(diffusion, FLOAT_DTYPE)
+            )
+
+    def advance(self, state, rvs, dt, risk_neutral):
+        return state + self.volatility * tf.sqrt(dt) * rvs

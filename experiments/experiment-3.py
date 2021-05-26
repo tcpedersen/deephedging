@@ -26,7 +26,7 @@ folder_name = r"results\experiment-3\cost" if cost \
 rate = 0.02
 drift = 0.05
 volatility = 0.2
-spread = 5 # barrier is spot + spread
+spread = 10 # barrier is spot + spread
 
 train_size, test_size, timesteps = int(2**18), int(2**18), 14
 frequency = 4

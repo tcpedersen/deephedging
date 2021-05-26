@@ -24,6 +24,7 @@ warmup_train_size = int(2**13)
 layers = 4
 units = 20
 dimension = int(sys.argv[1])
+activation = tf.keras.activations.relu # original is softplus
 
 folder_name = r"results\experiment-7"
 
@@ -42,30 +43,30 @@ for num in range(number_of_tests):
         timesteps / 52, dimension, rate, drift, volatility, num)
     random_books.add_butterfly(init_instruments, book, 20)
 
-    warmup_driver = gradient_driver.GradientDriver(
-        timesteps=timesteps,
-        frequency=0,
-        init_instruments=init_instruments,
-        init_numeraire=init_numeraire,
-        book=book,
-        learning_rate_min=1e-7,
-        learning_rate_max=1e-2
-        )
+    # warmup_driver = gradient_driver.GradientDriver(
+    #     timesteps=timesteps,
+    #     frequency=0,
+    #     init_instruments=init_instruments,
+    #     init_numeraire=init_numeraire,
+    #     book=book,
+    #     learning_rate_min=1e-7,
+    #     learning_rate_max=1e-2
+    #     )
 
-    warmup_driver.set_exploration(100.0, 15.0)
+    # warmup_driver.set_exploration(100.0, 15.0)
 
-    warmup_driver.add_testcase(
-        name="twin network",
-        model=gradient_models.SequenceTwinNetwork(
-            layers=layers,
-            units=units,
-            activation=tf.keras.activations.softplus
-            ),
-        train_size=warmup_train_size
-        )
+    # warmup_driver.add_testcase(
+    #     name="twin network",
+    #     model=gradient_models.SequenceTwinNetwork(
+    #         layers=layers,
+    #         units=units,
+    #         activation=tf.keras.activations.softplus
+    #         ),
+    #     train_size=warmup_train_size
+    #     )
 
-    warmup_driver.train(100, 64)
-    test_warmup_drivers.append(warmup_driver)
+    # warmup_driver.train(100, 64)
+    # test_warmup_drivers.append(warmup_driver)
 
     # ==============================================================================
     # === run hedge experiment
@@ -82,26 +83,26 @@ for num in range(number_of_tests):
         risk_neutral=False,
         learning_rate=1e-1
         )
-    driver.add_testcase(
-        name="continuous-time",
-        model=hedge_models.FeatureHedge(),
-        risk_measure=hedge_models.ExpectedShortfall(alpha),
-        normaliser=None,
-        feature_function="delta",
-        price_type="arbitrage")
+    # driver.add_testcase(
+    #     name="continuous-time",
+    #     model=hedge_models.FeatureHedge(),
+    #     risk_measure=hedge_models.ExpectedShortfall(alpha),
+    #     normaliser=None,
+    #     feature_function="delta",
+    #     price_type="arbitrage")
 
-    driver.add_testcase(
-        name="continuous time feature map",
-        model=hedge_models.LinearFeatureHedge(
-            timesteps,
-            book.instrument_dim,
-            [approximators.IdentityFeatureMap] \
-                * (1 + int(driver.cost is not None))
-        ),
-        risk_measure=hedge_models.ExpectedShortfall(alpha),
-        normaliser=None,
-        feature_function="delta",
-        price_type="arbitrage")
+    # driver.add_testcase(
+    #     name="continuous time feature map",
+    #     model=hedge_models.LinearFeatureHedge(
+    #         timesteps,
+    #         book.instrument_dim,
+    #         [approximators.IdentityFeatureMap] \
+    #             * (1 + int(driver.cost is not None))
+    #     ),
+    #     risk_measure=hedge_models.ExpectedShortfall(alpha),
+    #     normaliser=None,
+    #     feature_function="delta",
+    #     price_type="arbitrage")
 
 
     driver.add_testcase(
@@ -111,26 +112,26 @@ for num in range(number_of_tests):
             instrument_dim=book.instrument_dim,
             internal_dim=0,
             num_layers=4,
-            num_units=15, # changed to 10 since last test
-            activation=tf.keras.activations.softplus),
+            num_units=15,
+            activation=activation),
         risk_measure=hedge_models.ExpectedShortfall(alpha),
         normaliser=preprocessing.MeanVarianceNormaliser(),
         feature_function="log_martingale",
         price_type="arbitrage")
 
-    for case in warmup_driver.testcases:
-        driver.add_testcase(
-            case["name"] + " feature map",
-            model=hedge_models.LinearFeatureHedge(
-                timesteps,
-                book.instrument_dim,
-                [approximators.IdentityFeatureMap] \
-                    * (1 + int(driver.cost is not None))
-            ),
-            risk_measure=hedge_models.ExpectedShortfall(alpha),
-            normaliser=None,
-            feature_function=warmup_driver.make_feature_function(case),
-            price_type="arbitrage")
+    # for case in warmup_driver.testcases:
+    #     driver.add_testcase(
+    #         case["name"] + " feature map",
+    #         model=hedge_models.LinearFeatureHedge(
+    #             timesteps,
+    #             book.instrument_dim,
+    #             [approximators.IdentityFeatureMap] \
+    #                 * (1 + int(driver.cost is not None))
+    #         ),
+    #         risk_measure=hedge_models.ExpectedShortfall(alpha),
+    #         normaliser=None,
+    #         feature_function=warmup_driver.make_feature_function(case),
+    #         price_type="arbitrage")
 
     driver.train(train_size, 1000, int(2**10))
     driver.test(test_size)
@@ -141,15 +142,15 @@ for num in range(number_of_tests):
     print(f" {end:.3f}s")
 
 
-file_name = os.path.join(folder_name, fr"dimension-{dimension}.txt")
+file_name = os.path.join(folder_name, fr"dimension-{dimension}-extra.txt")
 if os.path.exists(file_name):
     os.remove(file_name)
 
-utils.driver_data_dumb(
-    test_warmup_drivers,
-    ["train_time"],
-    file_name
-    )
+# utils.driver_data_dumb(
+#     test_warmup_drivers,
+#     ["train_time"],
+#     file_name
+#     )
 
 utils.driver_data_dumb(
     test_hedge_drivers,

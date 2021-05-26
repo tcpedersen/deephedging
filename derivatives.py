@@ -553,26 +553,9 @@ class JumpPutCall(Derivative):
         return self.mertonsum(time, instrument, numeraire, black_delta)
 
 
-class BachelierJumpCall(Derivative):
-    def __init__(self, maturity, strike, volatility,
-                 intensity, jumpsize, jumpvol):
-        self.maturity = maturity
-        self.strike = strike
-        self.rate = 0.0
-        self.volatility = volatility
-        self.jumpsize = jumpsize
-        self.jumpvol = jumpvol
-        self.intensity = intensity
-        self.theta = 1
-
-        self.maxiter = 6
-
-
-    def payoff(self, time, instrument, numeraire):
-        option = PutCall(self.maturity, self.strike, self.rate, self.volatility,
-                         self.theta)
-
-        return option.payoff(time, instrument, numeraire)
+class BachelierCall(PutCall):
+    def __init__(self, maturity, strike, volatility):
+        super().__init__(maturity, strike, 0.0, volatility, 1.0)
 
 
     def adjoint(self, time, instrument, numeraire):
@@ -582,59 +565,62 @@ class BachelierJumpCall(Derivative):
         return self.theta * itm * tf.ones_like(instrument) / numeraire[-1]
 
 
-    def mertonsum(self, time, instrument, numeraire, func):
-        if not tf.reduce_all(tf.equal(numeraire, tf.ones_like(numeraire))):
-            raise NotImplementedError("non-one numeraire not supported.")
-
-        # HACK set last value to one to avoid overflow in nrate and nvol.
-        # zero ttm has no influence on price nor delta.
-        ttm = self.maturity - time
-        adjttm = tf.where(tf.equal(ttm, 0.0), 1.0, ttm)
-
-        value = tf.zeros_like(instrument)
-
-        volsq = self.volatility * self.volatility
-        jumpvolsq = self.jumpvol * self.jumpvol
-
-        nfac = [math.factorial(n) for n in range(self.maxiter)]
-        timeintensity = self.intensity * ttm
-        expterm = tf.math.exp(-timeintensity)
-
-        for n in tf.range(self.maxiter):
-            nfloat = tf.cast(n, FLOAT_DTYPE)
-            nvol = tf.sqrt(volsq + nfloat * jumpvolsq / adjttm)
-            nspot = instrument + self.jumpsize * (nfloat - timeintensity)
-
-            prob = expterm * tf.pow(timeintensity, nfloat) / nfac[n]
-            raw_value = func(ttm, nspot, self.strike, nvol)
-            value += prob * raw_value
-
-        return value / numeraire[-1]
-
-
     def value(self, time, instrument, numeraire):
-        return self.mertonsum(time, instrument, numeraire, bachelier_price)
+        ttm = self.maturity - time
+
+        return bachelier_price(ttm, instrument, self.strike, self.volatility)
 
 
     def delta(self, time, instrument, numeraire):
-        return self.mertonsum(time, instrument, numeraire, bachelier_delta)
+        ttm = self.maturity - time
+
+        return bachelier_delta(ttm, instrument, self.strike, self.volatility)
 
 
-    @classmethod
-    def from_jumpputcall(cls, instance, init_instrument):
-        volatility = tf.exp(-instance.intensity * instance.kappa) \
-            * init_instrument * instance.volatility
-        jumpsize = instance.kappa * init_instrument
-        jumpvol = (1 + instance.kappa) * instance.jumpvol * init_instrument
+class BachelierBasketCall(Derivative):
+    def __init__(self, maturity, strike, diffusion, weights):
+        if len(tf.shape(diffusion)) != 2:
+            raise TypeError("diffusion of wrong dimension.")
+        self.weights = weights / tf.reduce_sum(weights)
 
-        return cls(
-            maturity=instance.maturity,
-            strike=instance.strike,
-            volatility=volatility,
-            intensity=instance.intensity,
-            jumpsize=jumpsize,
-            jumpvol=jumpvol
-        )
+        self.basketsize = tf.shape(diffusion)[0]
+        basketvol = tf.sqrt(self.weights[tf.newaxis, :] @ diffusion \
+            @ tf.transpose(diffusion) @ self.weights[:, tf.newaxis])
+        self.option = BachelierCall(maturity, strike, basketvol)
+
+
+    def basketvalue(self, time, instrument, numeraire):
+        if len(tf.shape(instrument)) != 3:
+            raise ValueError("instrument is of wrong dimension.")
+        weighted = self.weights[tf.newaxis, :, tf.newaxis] * instrument
+
+        return tf.reduce_sum(weighted, 1)
+
+
+    def payoff(self, time, instrument, numeraire):
+        basketvalue = self.basketvalue(time, instrument, numeraire)
+
+        return self.option.payoff(time, basketvalue, numeraire)
+
+
+    def adjoint(self, time, instrument, numeraire):
+        basketvalue = self.basketvalue(time, instrument, numeraire)
+        chain = self.option.adjoint(time, basketvalue, numeraire)
+
+        return chain[:, tf.newaxis, :] * self.weights[tf.newaxis, :, tf.newaxis]
+
+
+    def value(self, time, instrument, numeraire):
+        basketvalue = self.basketvalue(time, instrument, numeraire)
+
+        return self.option.value(time, basketvalue, numeraire)
+
+
+    def delta(self, time, instrument, numeraire):
+        basketvalue = self.basketvalue(time, instrument, numeraire)
+        chain = self.option.delta(time, basketvalue, numeraire)
+
+        return chain[:, tf.newaxis, :] * self.weights[tf.newaxis, :, tf.newaxis]
 
 # ==============================================================================
 # === Black Scholes

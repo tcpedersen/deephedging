@@ -226,10 +226,10 @@ class GradientDriver(object):
         error = actual - prediction
         measure = utils.cast_apply(
             tf.reduce_mean,
-            tf.linalg.norm(error, axis=1)
-            )
+            tf.linalg.norm(error, axis=1),
+            axis=0)
 
-        return float(measure)
+        return measure if tf.size(measure) > 1 else float(measure)
 
 
     def mean_absolute_error(self, actual, prediction):
@@ -239,7 +239,7 @@ class GradientDriver(object):
             utils.cast_apply(tf.reduce_sum, tf.abs(error), axis=1),
             axis=0)
 
-        return float(measure)
+        return measure if tf.size(measure) > 1 else float(measure)
 
 
     def test(self, sample_size):

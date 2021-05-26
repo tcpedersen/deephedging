@@ -292,3 +292,37 @@ class TradeBook(DerivativeBook):
         tradevalues = super().link_apply("value", time, instruments, numeraire)
 
         return time, tf.concat([instruments, tradevalues], axis=1), numeraire
+
+
+class BasketBook(DerivativeBook):
+    def _apply(self, attr, time, instruments, numeraire):
+        derivative = self.derivatives[0]["derivative"]
+
+        return getattr(derivative, attr)(time, instruments, numeraire)
+
+
+    def payoff(self, time, instruments, numeraire):
+        return self._apply("payoff", time, instruments, numeraire)
+
+
+    def adjoint(self, time, instruments, numeraire):
+        return self._apply("adjoint", time, instruments, numeraire)
+
+
+    def value(self, time, instruments, numeraire):
+        return self._apply("value", time, instruments, numeraire)
+
+
+    def delta(self, time, instruments, numeraire):
+        return self._apply("delta", time, instruments, numeraire)
+
+
+    def exploring_start(self, state, batch_size, loc, scale):
+        rvs = tf.random.truncated_normal(
+            shape=(batch_size, tf.shape(state)[-1]),
+            mean=loc,
+            stddev=scale,
+            dtype=FLOAT_DTYPE
+            )
+
+        return rvs
