@@ -130,7 +130,6 @@ dmypy.json
 
 bin/*
 figures/*
-noncode/*
 *.docx
 *.tmp
 *.bat
