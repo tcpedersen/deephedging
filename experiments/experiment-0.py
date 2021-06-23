@@ -5,8 +5,8 @@ import hedge_models
 
 # ==============================================================================
 # === hyperparameters
-train_size, test_size, timesteps = int(2**16), int(2**16), 14
-hedge_multiplier = 2**0
+train_size, test_size, timesteps = int(2**2), int(2**14), 7
+hedge_multiplier = 1000
 frequency = 0 # only > 0 for continuous, else 0
 alpha = 0.95
 
@@ -16,9 +16,10 @@ case_name = "call"
 # ==============================================================================
 # === sample data
 init_instruments, init_numeraire, book = random_books.random_empty_book(
-    timesteps / 250, 1, 0.02, 0.05, 0.2, seed=69) # NOTE timesteps / 52 for DGA
+    timesteps / 250, 1, 0.0, 0.05, 0.2, seed=69) # NOTE timesteps / 52 for DGA
 
-random_books.add_calls(init_instruments, book)
+# random_books.add_calls(init_instruments, book)
+random_books.add_butterfly(init_instruments, book, 10)
 # random_books.add_dga_calls(init_instruments, book)
 # random_books.add_rko(init_instruments, book, 10.0)
 
@@ -41,13 +42,13 @@ driver.add_testcase(
     feature_function="delta",
     price_type="arbitrage")
 
-driver.train(train_size, 100, 2**12)
+driver.train(sample_size=train_size, epochs=0, batch_size=2**2)
 driver.test(test_size)
 driver.test_summary()
 
-full_folder_name = fr"{folder_name}/payoff-{hedge_multiplier}-{frequency}"
+# full_folder_name = fr"{folder_name}/payoff-{hedge_multiplier}-{frequency}"
 
-price = driver.testcases[0]["price"]
-utils.plot_markovian_payoff(driver, test_size, price, full_folder_name)
+# price = driver.testcases[0]["price"]
+# utils.plot_markovian_payoff(driver, test_size, price, full_folder_name)
 # utils.plot_geometric_payoff(driver, test_size, price, full_folder_name)
 # utils.plot_univariate_barrier_payoff(driver, test_size, price, full_folder_name)
