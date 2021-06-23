@@ -1,0 +1,10 @@
+name: deephedging
+channels:
+  - defaults
+dependencies:
+  - tensorflow-probability
+  - tensorflow
+  - numpy
+  - matplotlib
+  - python=3.8
+  - scikit-learn
